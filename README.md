@@ -1,0 +1,2 @@
+# GWI
+Gaussian Wasserstein VI
