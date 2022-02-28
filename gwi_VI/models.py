@@ -5,25 +5,24 @@ class r_param(torch.nn.Module):
     def __init__(self,k,Z,d=10):
         super(r_param, self).__init__()
         self.k = k
-        self.register_buffer('Z',Z)
-        self.L = torch.nn.Parameter(1e-2*torch.rand(self.Z.shape[0],d))
+        # self.register_buffer('Z',Z)
+        self.Z = torch.nn.Parameter(Z)
+        self.L = torch.nn.Parameter(0.5*torch.randn(self.Z.shape[0],d))
+        self.scale = torch.nn.Parameter(-torch.ones(1))
 
     def forward(self,x1,x2=None):
         if x2 is None:
             t= self.L.t() @ self.k(self.Z,x1).evaluate()
-            return self.k(x1).evaluate() + t.t() @ t
+            return torch.exp(self.scale)*(self.k(x1).evaluate() + t.t() @ t)
+            # return (self.k(x1).evaluate() + t.t() @ t)
         else:
             t= self.L.t() @ self.k(self.Z,x2).evaluate()
             t_ = self.k(x1,self.Z).evaluate() @ self.L
-            return self.k(x1,x2).evaluate() + t_ @ t
+            return  torch.exp(self.scale)*(self.k(x1,x2).evaluate() + t_ @ t)
+            # return  (self.k(x1,x2).evaluate() + t_ @ t)
 
 # U matrix is eigenvector matrix of k, which is associated with P
 # V matrix is eivenmatrix matrix of r, which is associated with Q
-
-
-
-
-
 
 class GWI(torch.nn.Module):
     def __init__(self,m_q,m_p,X,k,r,Z,reg=1e-3,sigma=1.0):
@@ -68,43 +67,45 @@ class GWI(torch.nn.Module):
 
 
 
-        # print('eff m ', self.eff_m)
+        print('eff m ', self.eff_m)
         U_slim = U[:,mask]
-        # self.register_buffer('U',U_slim)
+        self.register_buffer('U',U_slim)
         # self.register_buffer('tr_P',torch.sum(lamb_U_cut))
+        self.register_buffer('tr_P',torch.sum(tmp.diag()))
 
 
         lamb_U_cut=(1./(self.n*lamb_U_cut**0.5)).unsqueeze(-1)
-        # self.register_buffer('M',lamb_U_cut@lamb_U_cut.t())
+        self.register_buffer('M',lamb_U_cut@lamb_U_cut.t())
         return U_slim,torch.sum(lamb_U_cut),lamb_U_cut@lamb_U_cut.t()
 
     def calculate_V(self): #Pretty sure this is just the Nyström approximation to the inverse haha!
         tmp=self.r(self.Z)
-        lamb_V,V= torch.symeig(tmp, eigenvectors=True)
-        mask = lamb_V>1e-2
+        # lamb_V,V= torch.symeig(tmp, eigenvectors=True)
+        # mask = lamb_V>1e-2
         self.r_mat = tmp
-        return tmp,lamb_V[mask].sum() #"*(1+1./(2.*self.sigma)) #*(1./(2.*self.sigma)+1./self.m)
+        return tmp, tmp.diag().sum() #lamb_V[mask].sum() #"*(1+1./(2.*self.sigma)) #*(1./(2.*self.sigma)+1./self.m)
 
     def full_V_inv(self):
         with torch.no_grad():
             self.r_inv_full =torch.inverse(self.r(self.X).evaluate())
 
     def get_MPQ(self):
-        U,tr_P,M=self.calculate_U()
+        # U,tr_P,M=self.calculate_U()
+        # print(U,tr_P,M)
         rk_hat=self.r(self.Z,self.X)@self.k(self.X,self.Z).evaluate()
         # rk_hat =rk_hat.evaluate()
         V_hat_mu,trace_Q= self.calculate_V()
-        one= rk_hat@U
+        one= rk_hat@self.U
         res = torch.cholesky_solve(one,V_hat_mu)
-        res = one.t()@res * M
-        return res,trace_Q+tr_P#/self.m
+        res = one.t()@res * self.M
+        return res,trace_Q,self.tr_P#/self.m
 
     def calc_hard_tr_term(self):
-        mpq,trace_tot = self.get_MPQ()
+        mpq,trace_Q,trace_P= self.get_MPQ()
         eig,v =  torch.symeig(mpq, eigenvectors=True)
         eig = eig[eig>0]
 
-        return -2*torch.sum(eig**0.5),trace_tot
+        return -2*torch.sum(eig**0.5),trace_Q,trace_P
 
 
     def posterior_variance(self,X):
@@ -113,17 +114,17 @@ class GWI(torch.nn.Module):
             # right = torch.cholesky_solve(tmp.t(),self.r_mat)
             # # posterior = self.r(X).evaluate()-(tmp@right)
             posterior = self.r(X)
-        return torch.diag(posterior)
+        return torch.diag(posterior)**0.5
 
     def likelihood_reg(self,y,X):
         pred = self.m_q(X)
         vec=y-pred
         tmp=torch.ones_like(y)*self.m_p
         reg = torch.sum((pred-tmp)**2)**0.5
-        tmp=self.r(self.Z)
-        v,_= torch.symeig(tmp,True)
-        v = v[v>0]
-        return torch.mean(vec**2)/(2*self.sigma),reg+torch.sum(v)/(2*self.sigma)
+        # tmp=self.r(self.Z)
+        # v,_= torch.symeig(tmp,True)
+        # v = v[v>0]
+        return torch.mean(vec**2)/(2*self.sigma),reg#+torch.sum(tmp.diag())/(2*self.sigma)
 
     def mean_pred(self,X):
         with torch.no_grad():

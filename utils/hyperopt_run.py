@@ -82,7 +82,13 @@ class experiment_object():
             k._set_outputscale(self.VI_params['y_var'])
             k.requires_grad_(False)
         elif string=='r_param':
+            # l = RBFKernel()
+            # ls=get_median_ls(self.X)
+            # l._set_lengthscale(ls)
+            # p = ScaleKernel(l)
+            # p._set_outputscale(self.VI_params['y_var'])
             k = r_param(k=self.k,Z=self.Z,d=self.VI_params['r'])
+            # k.requires_grad_(True)
         # if is_q:
         #
         # else:
@@ -97,17 +103,20 @@ class experiment_object():
                 x_cat=x_cat.to(self.device)
             X=X.to(self.device)
             y=y.to(self.device)
-            if tr_m:
-                ll,reg=self.vi_obj.likelihood_reg(y,X)
-                loss = ll+reg
-            else:
-                hard_trace,easy_trace=self.vi_obj.calc_hard_tr_term()
-                loss = (hard_trace+easy_trace)
-                print('D: ',loss.item())
+            # if tr_m:
+            ll,reg=self.vi_obj.likelihood_reg(y,X)
+            # loss = ll+reg
+        # else:
+            hard_trace,tr_Q,tr_P=self.vi_obj.calc_hard_tr_term()
+            D = (hard_trace+tr_Q+reg)
+            log_loss =  tr_Q/(2.*self.vi_obj.sigma)+ll
+            # print(self.r.Z)
+            print('D: ',D.item())
+            print('log_loss: ',log_loss.item())
                 # print(self.r.lengthscale)
-
+            tot_loss = D + log_loss
             opt.zero_grad()
-            loss.backward()
+            tot_loss.backward()
             opt.step()
 
     def fit(self):
@@ -116,8 +125,8 @@ class experiment_object():
         opt=torch.optim.Adam(self.vi_obj.parameters(),lr=self.train_params['lr'])
         for i in range(self.train_params['epochs']):
             self.train_loop(opt,True)
-        for i in range(self.train_params['epochs']):
-            self.train_loop(opt,False)
+        # for i in range(self.train_params['epochs']):
+        #     self.train_loop(opt,False)
 
 
     def predict_mean(self,x_test):

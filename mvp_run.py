@@ -14,13 +14,13 @@ nn_params = {
     'output_dim': 1,
 }
 VI_params={
-    'm':50,
+    'm':100,
     'q_kernel':'r_param',
     'p_kernel':'rbf',
-    'sigma':1e-4,
+    'sigma':1e-2,
     'm_p':0.0,
     'reg':1e-2,
-    'r':25,
+    'r':50,
     'y_var': 10.0
 }
 
@@ -28,11 +28,11 @@ VI_params={
 training_params = {'bs': 900,
                    'patience': 10,
                    'device': 'cuda:0',
-                   'epochs':1000,
+                   'epochs':500,
                    'lr':1e-2
                    }
 if __name__ == '__main__':
-    index = 2
+    index = 1
 
     if index==1:
         X,y=sim_sin_curve()
@@ -52,8 +52,8 @@ if __name__ == '__main__':
         e.fit()
         y_hat=e.predict_mean(X.cuda()).squeeze()
         y_hat_q=e.predict_uncertainty(X.cuda()).squeeze()
-        l = (y_hat - y_hat_q).cpu().squeeze()
-        u =  (y_hat + y_hat_q).cpu().squeeze()
+        l = (y_hat - 1.96*y_hat_q).cpu().squeeze()
+        u =  (y_hat + 1.96*y_hat_q).cpu().squeeze()
     elif method=='GP':
         e = gp_full_baseline(train_x=X_tr.squeeze(),train_y=y_tr.squeeze(),train_params=training_params)
         e.to('cuda:0')
