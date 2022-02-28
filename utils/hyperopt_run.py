@@ -1,7 +1,7 @@
 import torch
 from gwi_VI.mean_models import *
 from gwi_VI.models import *
-from gpytorch.kernels import RBFKernel,LinearKernel,CosineKernel
+from gpytorch.kernels import RBFKernel,LinearKernel,CosineKernel,ScaleKernel
 from utils.dataloaders import *
 import tqdm
 
@@ -43,22 +43,30 @@ class experiment_object():
     def __init__(self,X,Y,nn_params,VI_params,train_params):
         self.X = X
         self.Y = Y
+        self.n,self.d = X.shape
         self.device=train_params['device']
 
         self.VI_params = VI_params
         self.train_params = train_params
-        self.r=self.get_kernels(self.VI_params['q_kernel'],True)
-        self.k=self.get_kernels(self.VI_params['p_kernel'],False)
+
+
         nn_params['d_in_x']=self.X.shape[1]
         self.m_q = feature_map(**nn_params).to(self.device)
         self.m_p = self.VI_params['m_p']
+
+        if self.n>self.VI_params['m']:
+            self.Z =  self.X[torch.randperm(self.n)[:self.VI_params['m']], :]
+        else:
+            self.Z=self.X
+        self.k=self.get_kernels(self.VI_params['p_kernel'],False)
+        self.r=self.get_kernels(self.VI_params['q_kernel'],True)
         self.vi_obj=GWI(m_q=self.m_q,
                         m_p=self.m_p,
                         r=self.r,
                         k=self.k,
                         X=self.X,
                         sigma=self.VI_params['sigma'],
-                        m=self.VI_params['m'],
+                        Z=self.Z,
                         reg=self.VI_params['reg']
                         ).to(self.device)
         self.vi_obj.calculate_U()
@@ -67,13 +75,17 @@ class experiment_object():
 
     def get_kernels(self,string,is_q=False):
         if string=='rbf':
-            k=RBFKernel()
+            l = RBFKernel()
             ls=get_median_ls(self.X)
-            k._set_lengthscale(ls)
-        if is_q:
-            k.requires_grad_(True)
-        else:
+            l._set_lengthscale(ls)
+            k = ScaleKernel(l)
+            k._set_outputscale(self.VI_params['y_var'])
             k.requires_grad_(False)
+        elif string=='r_param':
+            k = r_param(k=self.k,Z=self.Z,d=self.VI_params['r'])
+        # if is_q:
+        #
+        # else:
         return k
 
     def validation_loop(self,mode='val'):
@@ -90,11 +102,13 @@ class experiment_object():
                 loss = ll+reg
             else:
                 hard_trace,easy_trace=self.vi_obj.calc_hard_tr_term()
-                loss = hard_trace+easy_trace
+                loss = (hard_trace+easy_trace)
+                print('D: ',loss.item())
+                # print(self.r.lengthscale)
+
             opt.zero_grad()
             loss.backward()
             opt.step()
-        print(loss.item())
 
     def fit(self):
         # for p in self.vi_obj.parameters():
@@ -105,7 +119,6 @@ class experiment_object():
         for i in range(self.train_params['epochs']):
             self.train_loop(opt,False)
 
-        self.vi_obj.invert_r_mat()
 
     def predict_mean(self,x_test):
         return self.vi_obj.mean_pred(x_test)
