@@ -103,14 +103,7 @@ class experiment_object():
                 x_cat=x_cat.to(self.device)
             X=X.to(self.device)
             y=y.to(self.device)
-            # if tr_m:
-            ll,reg=self.vi_obj.likelihood_reg(y,X)
-            # loss = ll+reg
-        # else:
-            hard_trace,tr_Q,tr_P=self.vi_obj.calc_hard_tr_term()
-            D = (hard_trace+tr_Q+reg)
-            log_loss =  tr_Q/(2.*self.vi_obj.sigma)+ll
-            # print(self.r.Z)
+            log_loss,D=self.vi_obj.get_loss(y,X)
             print('D: ',D.item())
             print('log_loss: ',log_loss.item())
                 # print(self.r.lengthscale)
