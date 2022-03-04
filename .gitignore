@@ -5,7 +5,7 @@ __pycache__/
 *.png
 *.idea
 *.pt
-
+local_UCI_storageUCI
 # C extensions
 *.so
 

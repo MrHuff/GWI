@@ -17,7 +17,7 @@ VI_params={
     'm':100,
     'q_kernel':'r_param',
     'p_kernel':'rbf',
-    'sigma':1e-2,
+    'sigma':1e-4,
     'm_p':0.0,
     'reg':1e-2,
     'r':50,
@@ -32,7 +32,7 @@ training_params = {'bs': 900,
                    'lr':1e-2
                    }
 if __name__ == '__main__':
-    index = 1
+    index = 2
 
     if index==1:
         X,y=sim_sin_curve()
@@ -48,7 +48,7 @@ if __name__ == '__main__':
     print(y_tr.std().item())
     VI_params['y_var'] = y_tr.std().item()
     if method=='GWI':
-        e=experiment_object(X=X_tr,Y=y_tr,nn_params=nn_params,VI_params=VI_params,train_params=training_params)
+        e=mvp_experiment_object(X=X_tr, Y=y_tr, nn_params=nn_params, VI_params=VI_params, train_params=training_params)
         e.fit()
         y_hat=e.predict_mean(X.cuda()).squeeze()
         y_hat_q=e.predict_uncertainty(X.cuda()).squeeze()
@@ -72,6 +72,6 @@ if __name__ == '__main__':
     ax.fill_between(X.squeeze(),l,u, color='b', alpha=.5)
     plt.savefig(f'{method}_{index}.png')
 
-
+    #FIGURE OUT SCALING ISSUE
 
 

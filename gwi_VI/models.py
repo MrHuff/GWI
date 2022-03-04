@@ -6,13 +6,13 @@ from scipy.special import roots_hermite
 
 
 class r_param(torch.nn.Module):
-    def __init__(self,k,Z,init=0.5,d=10):
+    def __init__(self,k,Z,init=0.5,d=10,scale_init=0.0):
         super(r_param, self).__init__()
         self.k = k
         # self.register_buffer('Z',Z)
         self.Z = torch.nn.Parameter(Z)
         self.L = torch.nn.Parameter(init*torch.randn(self.Z.shape[0],d))
-        self.scale = torch.nn.Parameter(-torch.ones(1))
+        self.scale = torch.nn.Parameter(torch.ones(1)*scale_init)
 
     def forward(self,x1,x2=None):
         if x2 is None:
@@ -26,41 +26,46 @@ class r_param(torch.nn.Module):
             # return  (self.k(x1,x2).evaluate() + t_ @ t)
 
 class ls_init(torch.nn.Module):
-    def __init__(self,k,y,Z,sigma,its):
+    def __init__(self,k,y,Z,sigma,its=50):
         super(ls_init, self).__init__()
         self.its = its
         self.register_buffer('eye',torch.eye(Z.shape[0])*sigma)
-        self.register_buffer('Z',torch.eye(Z))
+        self.register_buffer('Z',Z)
         self.register_buffer('Y',y)
 
         self.k=k
-    @staticmethod
-    def objective(L):
-        inv=torch.triangular_solve(y,L)
+
+    def objective(self,L):
+        inv,_=torch.triangular_solve(self.Y,L)
         return -torch.diag(L).log().sum()-0.5*torch.sum(inv**2)
 
     def pre_train(self):
         opt = torch.optim.Adam(self.k.parameters(),lr=1e-2)
         for i in tqdm.tqdm(range(self.its)):
             opt.zero_grad()
-            L=torch.cholesky(self.k(self.Z).evaluate)
-            loss= ls_init.objective(L)
+            L=torch.cholesky(self.k(self.Z).evaluate()+self.eye*1e-1)
+            loss= self.objective(L)
             loss.backward()
             opt.step()
 
 class r_param_cholesky(torch.nn.Module):
-    def __init__(self,k,Z,X,sigma,reg=1e-2):
+    def __init__(self,k,Z,X,sigma,reg=1e-3,scale_init=0.0):
         super(r_param_cholesky, self).__init__()
         self.k = k
         self.Z = torch.nn.Parameter(Z)
-        self.scale = torch.nn.Parameter(-torch.ones(1))
+        self.scale = torch.nn.Parameter(torch.ones(1)*scale_init)
         self.register_buffer('eye',torch.eye(Z.shape[0]))
+        self.register_buffer('X',X)
         self.reg=reg
         self.sigma=sigma
+
+
+    def init_L(self):
         with torch.no_grad():
-            kx= self.k(Z,X).evaluate()
-            kzz =self.k(Z).evaluate()
-            L = torch.cholesky(torch.inverse(kzz+kx@kx.t()/sigma-self.eye))
+            kx= self.k(self.Z,self.X).evaluate()
+            kzz =self.k(self.Z).evaluate()
+            L = torch.inverse(torch.cholesky(kzz+kx@kx.t()/self.sigma+1./self.sigma**0.5*self.eye))
+            # print(L)
         self.L = torch.nn.Parameter(L)
 
 
@@ -68,7 +73,7 @@ class r_param_cholesky(torch.nn.Module):
         L = torch.tril(self.L) + self.eye * self.reg
         if x2 is None:
             t= L.t() @ self.k(self.Z,x1).evaluate()
-            return torch.exp(self.scale)*(self.k(x1).evaluate() + t.t() @ t)
+            return torch.exp(torch.tanh(self.scale))*(self.k(x1).evaluate() + t.t() @ t)
             # return (self.k(x1).evaluate() + t.t() @ t)
         else:
             t= L.t() @ self.k(self.Z,x2).evaluate()
