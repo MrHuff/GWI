@@ -18,8 +18,9 @@ def sim_sin_curve_2(n=1000,noise=0.5,seed=1):
 
 def sim_sin_curve_3(n=1000,noise=0.5,seed=1):
     torch.manual_seed(seed)
-    x = torch.linspace(-10,10,n)
-    y=torch.sin(x)+torch.randn_like(x)*noise + 0.1*x**3
+    x = torch.linspace(-1,1,n)
+    y = torch.sin(x * 3 * 3.14) + 0.3 * torch.cos(x * 9 * 3.14) + 0.5 * torch.sin(x * 7 * 3.14)
+    y = y +  torch.randn_like(x)*noise
     return x.unsqueeze(-1),y.unsqueeze(-1)
 
 

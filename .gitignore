@@ -5,10 +5,12 @@ __pycache__/
 *.png
 *.idea
 *.pt
+*.p
 local_UCI_storageUCI
 # C extensions
+data
 *.so
-
+*gz
 # Distribution / packaging
 .Python
 build/

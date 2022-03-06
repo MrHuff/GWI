@@ -5,7 +5,9 @@ from gpytorch.kernels import RBFKernel,LinearKernel,CosineKernel,ScaleKernel
 from utils.dataloaders import *
 from utils.regression_dataloaders import *
 import tqdm
-
+from hyperopt import hp,tpe,Trials,fmin,space_eval,STATUS_OK,STATUS_FAIL,rand
+import pickle
+from utils.classification_dataloaders import *
 
 def covar_dist(x1,x2):
     adjustment = x1.mean(-2, keepdim=True)
@@ -28,12 +30,14 @@ def covar_dist(x1,x2):
     # res.clamp_min_(0)
     return res
 
-def get_median_ls( X, Y=None):
+def get_median_ls( X):
+    if X.shape[0]>2500:
+        X_in = X[torch.randperm(X.shape[0])[:2500]]
+    else:
+        X_in = X
+
     with torch.no_grad():
-        if Y is None:
-            d = covar_dist(x1=X, x2=X)
-        else:
-            d = covar_dist(x1=X, x2=Y)
+        d = covar_dist(x1=X_in, x2=X_in)
         ret = torch.sqrt(torch.median(d[d >= 0]))  # print this value, should be increasing with d
         if ret.item() == 0:
             ret = torch.tensor(1.0)
@@ -69,10 +73,10 @@ class mvp_experiment_object():
                         m_p=self.m_p,
                         r=self.r,
                         k=self.k,
-                        X=self.X,
                         sigma=self.VI_params['sigma'],
                         Z=self.Z,
-                        reg=self.VI_params['reg']
+                        reg=self.VI_params['reg'],
+                        APQ=self.VI_params['APQ']
                         ).to(self.device)
         self.vi_obj.calculate_U()
         dataset=general_custom_dataset(X,Y,nn_params['cat_size_list'])
@@ -81,8 +85,8 @@ class mvp_experiment_object():
     def get_kernels(self,string,is_q=False):
         if string=='rbf':
             l = RBFKernel()
-            ls=get_median_ls(self.X).to(self.device)
-            l._set_lengthscale(ls)
+            # ls=get_median_ls(self.X).to(self.device)
+            # l._set_lengthscale(ls)
             k = ScaleKernel(l)
             k._set_outputscale(self.VI_params['y_var'])
             ls_obj=ls_init(k,self.Y_Z,self.Z,sigma=self.VI_params['sigma']).to(self.device)
@@ -105,9 +109,6 @@ class mvp_experiment_object():
         # else:
         return k
 
-    def validation_loop(self,mode='val'):
-        pass
-
     def train_loop(self,opt,tr_m=True):
         self.dataloader.dataset.set('train')
         for i,(X,x_cat,y) in tqdm.tqdm(enumerate(self.dataloader)):
@@ -125,16 +126,11 @@ class mvp_experiment_object():
             opt.step()
 
     def fit(self):
-        # for p in self.vi_obj.parameters():
-        #     print(p)
         opt=torch.optim.Adam(self.vi_obj.parameters(),lr=self.train_params['lr'])
         for i in range(self.train_params['epochs']):
             self.train_loop(opt,True)
 
         print(self.vi_obj.r.scale)
-        # for i in range(self.train_params['epochs']):
-        #     self.train_loop(opt,False)
-
 
     def predict_mean(self,x_test):
         return self.vi_obj.mean_pred(x_test)
@@ -142,55 +138,79 @@ class mvp_experiment_object():
     def predict_uncertainty(self, x_test):
         return self.vi_obj.posterior_variance(x_test)
 
+class experiment_regression_object():
+    def __init__(self,hyper_param_space,VI_params,train_params,device='cuda:0'):
+        self.train_params=train_params
+        self.VI_params = VI_params
+        self.device = device
+        self.hyperopt_params = ['transformation', 'depth_x', 'width_x', 'bs', 'lr','m_P','sigma']
+        self.get_hyperparameterspace(hyper_param_space)
+        self.generate_save_path()
 
-class mvp_experiment_regression_object():
-    def __init__(self,nn_params,VI_params,train_params):
-        self.dataset = train_params['dataset']
-        self.fold = train_params['fold']
+    def generate_save_path(self):
+        model_name = self.train_params['model_name']
+        savedir = self.train_params['savedir']
+        dataset = self.train_params['dataset']
+        fold = self.train_params['fold']
+        seed = self.train_params['seed']
+        self.save_path = f'{savedir}/{dataset}_seed={seed}_fold_idx={fold}_model={model_name}/'
+        if not os.path.exists(self.save_path):
+            os.makedirs(self.save_path)
 
-        self.dataloader = get_regression_dataloader(dataset=self.dataset,fold=self.fold,bs=train_params['bs'])
+    def __call__(self,parameters_in):
+        self.dataloader = get_regression_dataloader(dataset=self.train_params['dataset'],fold=self.train_params['fold'],bs=parameters_in['bs'])
         self.n,self.d = self.dataloader.dataset.train_X.shape
         self.X=self.dataloader.dataset.train_X
         self.Y=self.dataloader.dataset.train_y
-
-
-        self.device=train_params['device']
-
-        self.VI_params = VI_params
-        self.train_params = train_params
-
-        nn_params['d_in_x']=self.d
+        mean_y_train = self.Y.mean().item()
+        nn_params = {
+            'd_in_x' : self.d,
+            'cat_size_list': [],
+            'output_dim' : 1,
+            'transformation':parameters_in['transformation'],
+            'layers_x': [parameters_in['width_x']]*parameters_in['depth_x'],
+        }
         self.m_q = feature_map(**nn_params).to(self.device)
-        self.m_p = self.VI_params['m_p']
 
         if self.n>self.VI_params['m']:
             z_mask=torch.randperm(self.n)[:self.VI_params['m']]
             self.Z =  self.X[z_mask, :]
             self.Y_Z= self.Y[z_mask,:]
             self.X_hat =  self.X[torch.randperm(self.n)[:self.VI_params['m']], :]
-
         else:
             self.Z=self.X
-        self.k=self.get_kernels(self.VI_params['p_kernel'],False)
+        self.k=self.get_kernels(self.VI_params['p_kernel'])
         self.k=self.k.to(self.device)
-        self.r=self.get_kernels(self.VI_params['q_kernel'],True)
+        self.r=self.get_kernels(self.VI_params['q_kernel'])
         self.vi_obj=GWI(m_q=self.m_q,
-                        m_p=self.m_p,
+                        m_p=mean_y_train*parameters_in['m_P'],
                         r=self.r,
                         k=self.k,
-                        X=self.X,
-                        sigma=self.VI_params['sigma'],
+                        sigma=parameters_in['sigma'],
                         Z=self.Z,
-                        reg=self.VI_params['reg']
+                        reg=self.VI_params['reg'],
+                        APQ=self.VI_params['APQ']
                         ).to(self.device)
-        self.vi_obj.calculate_U()
+        self.opt=torch.optim.Adam(self.vi_obj.parameters(),lr=parameters_in['lr'])
+
+        val_loss,test_loss=self.fit()
+        return  {'loss': val_loss,
+                'status': STATUS_OK,
+                'test_loss': test_loss,
+                 'net_params':nn_params
+                }
 
 
-    def get_kernels(self,string,is_q=False):
+    def get_hyperparameterspace(self,hyper_param_space):
+        self.hyperparameter_space = {}
+        for string in self.hyperopt_params:
+            self.hyperparameter_space[string] = hp.choice(string, hyper_param_space[string])
+
+    def get_kernels(self,string):
         if string=='rbf':
             l = RBFKernel()
-            ls=get_median_ls(self.X).to(self.device)
-            l._set_lengthscale(ls)
+            # ls=get_median_ls(self.X).to(self.device)
+            # l._set_lengthscale(ls)
             k = ScaleKernel(l)
             k._set_outputscale(self.VI_params['y_var'])
             ls_obj=ls_init(k,self.Y_Z,self.Z,sigma=self.VI_params['sigma']).to(self.device)
@@ -199,28 +219,30 @@ class mvp_experiment_regression_object():
 
             k.requires_grad_(False)
         elif string=='r_param':
-            # l = RBFKernel()
-            # ls=get_median_ls(self.X)
-            # l._set_lengthscale(ls)
-            # p = ScaleKernel(l)
-            # p._set_outputscale(self.VI_params['y_var'])
-            # k = r_param(k=self.k,Z=self.Z,d=self.VI_params['r'])
             k = r_param_cholesky(k=self.k,Z=self.Z,X=self.X_hat,sigma=self.VI_params['sigma']).to(self.device)
             k.init_L()
-            # k.requires_grad_(True)
-        # if is_q:
-        #
-        # else:
+
         return k
 
     def validation_loop(self,mode='val'):
-        pass
+        self.vi_obj.eval()
+        self.dataloader.dataset.set(mode)
+        losses=0.0
+        obs_size=0
+        for i,(X,x_cat,y) in tqdm.tqdm(enumerate(self.dataloader)):
+            X = X.to(self.device)
+            y = y.to(self.device)
+            obs_size+=y.shape[0]
+            with torch.no_grad():
+                log_loss, D = self.vi_obj.get_loss(y, X)
+            losses+=log_loss.item()
+        validation_loss_log_likelihood = losses/obs_size
+        return validation_loss_log_likelihood
 
-    def train_loop(self,opt,tr_m=True):
+    def train_loop(self,opt):
+        self.vi_obj.train()
         self.dataloader.dataset.set('train')
         for i,(X,x_cat,y) in tqdm.tqdm(enumerate(self.dataloader)):
-            if not isinstance(x_cat,list):
-                x_cat=x_cat.to(self.device)
             X=X.to(self.device)
             y=y.to(self.device)
             log_loss,D=self.vi_obj.get_loss(y,X)
@@ -233,21 +255,200 @@ class mvp_experiment_regression_object():
             opt.step()
 
     def fit(self):
-        # for p in self.vi_obj.parameters():
-        #     print(p)
-        opt=torch.optim.Adam(self.vi_obj.parameters(),lr=self.train_params['lr'])
+        best=np.inf
         for i in range(self.train_params['epochs']):
-            self.train_loop(opt,True)
+            self.train_loop(self.opt)
+            validation_loss=self.validation_loop('val')
 
-        print(self.vi_obj.r.scale)
-        # for i in range(self.train_params['epochs']):
-        #     self.train_loop(opt,False)
-
+        validation_loss=self.validation_loop('val')
+        test_loss = self.validation_loop('test')
+        return validation_loss,test_loss
+    def run(self):
+        if os.path.exists(self.save_path + 'hyperopt_database.p'):
+            return
+        trials = Trials()
+        best = fmin(fn=self,
+                    space=self.hyperparameter_space,
+                    algo=tpe.suggest,
+                    max_evals=self.train_params['hyperits'],
+                    trials=trials,
+                    verbose=True)
+        print(space_eval(self.hyperparameter_space, best))
+        pickle.dump(trials,
+                    open(self.save_path + 'hyperopt_database.p',
+                         "wb"))
 
     def predict_mean(self,x_test):
         return self.vi_obj.mean_pred(x_test)
 
     def predict_uncertainty(self, x_test):
         return self.vi_obj.posterior_variance(x_test)
+
+class experiment_classification_object():
+    def __init__(self,hyper_param_space,VI_params,train_params,device='cuda:0'):
+        self.train_params=train_params
+        self.VI_params = VI_params
+        self.device = device
+        self.hyperopt_params = ['depth_x', 'width_x','depth_fc', 'bs', 'lr','m_P','sigma','transformation']
+        self.get_hyperparameterspace(hyper_param_space)
+        self.generate_save_path()
+
+    def generate_save_path(self):
+        model_name = self.train_params['model_name']
+        savedir = self.train_params['savedir']
+        dataset = self.train_params['dataset']
+        fold = self.train_params['fold']
+        seed = self.train_params['seed']
+        self.save_path = f'{savedir}/{dataset}_seed={seed}_fold_idx={fold}_model={model_name}/'
+        if not os.path.exists(self.save_path):
+            os.makedirs(self.save_path)
+
+    def __call__(self,parameters_in):
+        self.dataloader_train,self.dataloader_val,self.dataloader_test=get_dataloaders(dataset_string=self.train_params['dataset'],
+                                                                                       batch_size=parameters_in['bs'],
+                                                                                       val_factor=self.train_params['val_factor']
+                                                                                       )
+
+        # self.dataloader = get_regression_dataloader(dataset=self.train_params['dataset'],fold=self.train_params['fold'],bs=self.train_params['bs'])
+        x_list=[]
+        y_list=[]
+        for i,(X,y) in tqdm.tqdm(enumerate(self.dataloader_train)):
+            x_list.append(X)
+            y_list.append(y)
+        self.X=torch.cat(x_list,dim=0)
+        self.n= self.X.shape[0]
+        self.Y=torch.cat(y_list,dim=0).unsqueeze(-1)
+        nn_params = {
+
+            'cdim':self.train_params['cdim'],
+            'output':self.train_params['output_classes'],
+            'channels':[parameters_in['width_x']]*parameters_in['depth_x'],
+            'image_size':self.train_params['image_size'],
+            'transform': parameters_in['transformation'],
+            'channels_fc':[parameters_in['width_x']]*parameters_in['depth_fc']
+
+        }
+        self.m_q = conv_net_classifier(**nn_params).to(self.device)
+
+        if self.n>self.VI_params['m']:
+            z_mask=torch.randperm(self.n)[:self.VI_params['m']]
+            self.Z =  self.X[z_mask].flatten(1).float()
+            self.X_hat =  self.X[torch.randperm(self.n)[:self.VI_params['m']]].flatten(1).float()
+            self.Y_Z= self.Y[z_mask,:].float()
+
+        else:
+            self.Z=self.X.flatten(1).float()
+
+        self.k = self.get_kernels(self.VI_params['p_kernel'])
+        self.r=torch.nn.ModuleList()
+        for i in range(self.train_params['output_classes']):
+            self.r.append(self.get_kernels(self.VI_params['q_kernel']))
+        self.vi_obj=GVI_multi_classification(m_q=self.m_q,
+                        m_p=parameters_in['m_P'],
+                        r_list=self.r,
+                        k_list=self.k,
+                        sigma=parameters_in['sigma'],
+                        Z=self.Z,
+                        reg=self.VI_params['reg']
+                        ).to(self.device)
+        self.opt=torch.optim.Adam(self.vi_obj.parameters(),lr=parameters_in['lr'])
+        self.fit()
+
+
+
+    def get_hyperparameterspace(self,hyper_param_space):
+        self.hyperparameter_space = {}
+        for string in self.hyperopt_params:
+            self.hyperparameter_space[string] = hp.choice(string, hyper_param_space[string])
+
+    def get_kernels(self,string):
+        if string=='rbf':
+            l = RBFKernel()
+            # ls=get_median_ls(self.X).to(self.device)
+            # l._set_lengthscale(ls)
+            k = ScaleKernel(l)
+            k._set_outputscale(self.VI_params['y_var'])
+            ls_obj=ls_init(k,self.Y_Z,self.Z,sigma=self.VI_params['sigma']).to(self.device)
+            ls_obj.pre_train()
+            print(l.lengthscale,k.outputscale)
+
+            k.requires_grad_(False)
+        elif string=='r_param':
+            k = r_param_cholesky(k=self.k,Z=self.Z,X=self.X_hat,sigma=self.VI_params['sigma']).to(self.device)
+            k.init_L()
+        return k
+
+    def validation_loop(self,mode='val'):
+        self.vi_obj.eval()
+        if mode=='val':
+            dl=self.dataloader_val
+        if mode=='test':
+            dl=self.dataloader_test
+        nll=0.0
+        n=0
+        acc=[]
+        for i, (X, y) in tqdm.tqdm(enumerate(dl)):
+            X = X.float().to(self.device)
+            y = y.to(self.device)
+            log_loss, D = self.vi_obj.get_loss(y, X)
+            softmax_output=self.predict_mean(X)
+            max_scores, max_idx_class = softmax_output.max(
+                dim=1)  # [B, n_classes] -> [B], # get values & indices with the max vals in the dim with scores for each class/label
+            acc.append((max_idx_class==y).squeeze())
+
+            nll+=log_loss.item()
+            n+=y.shape[0]
+        nll=nll/n
+        acc=torch.cat(acc,dim=0).sum()/n
+        print(f'held out {mode} acc: ',acc.item())
+        print(f'held out {mode} nll: ',nll)
+        return acc.item(),nll
+
+    def train_loop(self,opt):
+        self.vi_obj.train()
+        for i,(X,y) in tqdm.tqdm(enumerate(self.dataloader_train)):
+            X=X.float().to(self.device)
+            y=y.to(self.device)
+
+            log_loss,D=self.vi_obj.get_loss(y,X)
+            print('D: ',D.item())
+            print('log_loss: ',log_loss.item())
+                # print(self.r.lengthscale)
+            tot_loss = D + log_loss
+            opt.zero_grad()
+            tot_loss.backward()
+            opt.step()
+
+    def fit(self):
+        # for p in self.vi_obj.parameters():
+        #     print(p)
+        for i in range(self.train_params['epochs']):
+            self.train_loop(self.opt)
+            self.validation_loop('val')
+            self.validation_loop('test')
+        print(self.vi_obj.r.scale)
+        # for i in range(self.train_params['epochs']):
+        #     self.train_loop(opt,False)
+    def run(self):
+        if os.path.exists(self.save_path + 'hyperopt_database.p'):
+            return
+        trials = Trials()
+        best = fmin(fn=self,
+                    space=self.hyperparameter_space,
+                    algo=tpe.suggest,
+                    max_evals=self.train_params['hyperits'],
+                    trials=trials,
+                    verbose=True)
+        print(space_eval(self.hyperparameter_space, best))
+        pickle.dump(trials,
+                    open(self.save_path + 'hyperopt_database.p',
+                         "wb"))
+
+    def predict_mean(self,x_test):
+        return self.vi_obj.mean_pred(x_test)
+
+    def predict_uncertainty(self, x_test):
+        return self.vi_obj.posterior_variance(x_test)
+
 
 

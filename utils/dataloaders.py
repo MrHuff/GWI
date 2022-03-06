@@ -1,21 +1,21 @@
 
 from torch.utils.data.dataset import Dataset
-from pycox.preprocessing.feature_transforms import *
+# from pycox.preprocessing.feature_transforms import *
 import torch
 
-def categorical_transformer(X,cat_cols,cont_cols):
-    c = OrderedCategoricalLong()
-    for el in cat_cols:
-        X[:,el] = c.fit_transform(X[:,el])
-    cat_cols = cat_cols
-    if cat_cols:
-        unique_cat_cols = X[:,cat_cols].max(axis=0).tolist()
-        unique_cat_cols = [el + 1 for el in unique_cat_cols]
-    else:
-        unique_cat_cols = []
-    X_cont=X[cont_cols]
-    X_cat=X[cat_cols]
-    return X_cont,X_cat,unique_cat_cols
+# def categorical_transformer(X,cat_cols,cont_cols):
+#     c = OrderedCategoricalLong()
+#     for el in cat_cols:
+#         X[:,el] = c.fit_transform(X[:,el])
+#     cat_cols = cat_cols
+#     if cat_cols:
+#         unique_cat_cols = X[:,cat_cols].max(axis=0).tolist()
+#         unique_cat_cols = [el + 1 for el in unique_cat_cols]
+#     else:
+#         unique_cat_cols = []
+#     X_cont=X[cont_cols]
+#     X_cat=X[cat_cols]
+#     return X_cont,X_cat,unique_cat_cols
 
 class general_custom_dataset(Dataset):
     def __init__(self,X,y,x_cat=[]):
