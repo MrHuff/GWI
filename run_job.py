@@ -1,5 +1,4 @@
 import torch
-
 from utils.hyperopt_run import *
 from simulate_data.unit_test_data import *
 import seaborn as sns
@@ -7,14 +6,7 @@ import matplotlib.pyplot as plt
 from GP_baseline.gp_baseline_exact import *
 from GP_baseline.gp_baseline_vi import *
 sns.set()
-#TODO: upgrade m_Q wtf haha
-nn_params = {
-    'layers_x': [8,8],
-    'cat_size_list': [],
-    'dropout': 0.0,
-    'transformation': torch.tanh,
-    'output_dim': 1,
-}
+
 VI_params={
     'm':100,
     'q_kernel':'r_param',
@@ -58,6 +50,9 @@ if __name__ == '__main__':
     torch.random.manual_seed(np.random.randint(0,100000))
     e=experiment_classification_object(hyper_param_space=h_space, VI_params=VI_params, train_params=training_params)
     e.run()
+
+
+
         # y_hat=e.predict_mean(X.cuda()).squeeze()
         # y_hat_q=e.predict_uncertainty(X.cuda()).squeeze()
         # l = (y_hat - 1.96*y_hat_q).cpu().squeeze()

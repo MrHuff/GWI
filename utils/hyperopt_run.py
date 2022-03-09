@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from gwi_VI.mean_models import *
 from gwi_VI.models import *
@@ -259,6 +260,8 @@ class experiment_regression_object():
         for i in range(self.train_params['epochs']):
             self.train_loop(self.opt)
             validation_loss=self.validation_loop('val')
+            if validation_loss<best:
+                best=validation_loss
 
         validation_loss=self.validation_loop('val')
         test_loss = self.validation_loop('test')
@@ -292,6 +295,8 @@ class experiment_classification_object():
         self.hyperopt_params = ['depth_x', 'width_x','depth_fc', 'bs', 'lr','m_P','sigma','transformation']
         self.get_hyperparameterspace(hyper_param_space)
         self.generate_save_path()
+        self.log_upper_bound = np.log(self.train_params['output_classes'])
+        self.auc_interval = torch.from_numpy(np.linspace(0,self.log_upper_bound,100)).unsqueeze(0).to(device)
 
     def generate_save_path(self):
         model_name = self.train_params['model_name']
@@ -308,6 +313,10 @@ class experiment_classification_object():
                                                                                        batch_size=parameters_in['bs'],
                                                                                        val_factor=self.train_params['val_factor']
                                                                                        )
+        self.OOB_loader = get_dataloaders_OOB(
+            dataset_string=self.train_params['dataset'],
+            batch_size=parameters_in['bs'],
+        )
 
         # self.dataloader = get_regression_dataloader(dataset=self.train_params['dataset'],fold=self.train_params['fold'],bs=self.train_params['bs'])
         x_list=[]
@@ -352,9 +361,18 @@ class experiment_classification_object():
                         reg=self.VI_params['reg']
                         ).to(self.device)
         self.opt=torch.optim.Adam(self.vi_obj.parameters(),lr=parameters_in['lr'])
-        self.fit()
+        val_acc,val_nll,val_ood_auc,test_acc,test_nll,test_ood_auc=self.fit()
 
-
+        return {'loss': val_acc,
+                'val_acc':val_acc,
+                'val_nll':val_nll,
+                'val_ood_auc':val_ood_auc,
+                'status': STATUS_OK,
+                'test_acc': test_acc,
+                'test_nll': test_nll,
+                'test_ood_auc': test_ood_auc,
+                'net_params': nn_params
+                }
 
     def get_hyperparameterspace(self,hyper_param_space):
         self.hyperparameter_space = {}
@@ -378,7 +396,7 @@ class experiment_classification_object():
             k.init_L()
         return k
 
-    def validation_loop(self,mode='val'):
+    def validation_loop(self,mode='val'): #acc and nll
         self.vi_obj.eval()
         if mode=='val':
             dl=self.dataloader_val
@@ -390,11 +408,12 @@ class experiment_classification_object():
         for i, (X, y) in tqdm.tqdm(enumerate(dl)):
             X = X.float().to(self.device)
             y = y.to(self.device)
-            log_loss, D = self.vi_obj.get_loss(y, X)
-            softmax_output=self.predict_mean(X)
-            max_scores, max_idx_class = softmax_output.max(
-                dim=1)  # [B, n_classes] -> [B], # get values & indices with the max vals in the dim with scores for each class/label
-            acc.append((max_idx_class==y).squeeze())
+            with torch.no_grad():
+                log_loss, D = self.vi_obj.get_loss(y, X)
+                softmax_output=self.predict_mean(X)
+                max_scores, max_idx_class = softmax_output.max(
+                    dim=1)  # [B, n_classes] -> [B], # get values & indices with the max vals in the dim with scores for each class/label
+                acc.append((max_idx_class==y).squeeze())
 
             nll+=log_loss.item()
             n+=y.shape[0]
@@ -404,6 +423,46 @@ class experiment_classification_object():
         print(f'held out {mode} nll: ',nll)
         return acc.item(),nll
 
+    def get_auc(self,entropy,true_labels,threshold):
+        classification = (entropy.unsqueeze(-1)<=threshold)==true_labels.unsqueeze(-1)
+        AUC = torch.mean(classification.float()).item()
+        print('AUC OOD: ', AUC)
+        return AUC
+
+
+    def OOD_AUC(self,mode='val'):
+        self.vi_obj.eval()
+        if mode == 'val':
+            dl = self.dataloader_val
+        if mode == 'test':
+            dl = self.dataloader_test
+
+        true_labels=[]
+        entropies_in_sample=[]
+        for i, (X, y) in tqdm.tqdm(enumerate(dl)):
+            X = X.float().to(self.device)
+            # y = y.to(self.device)
+            with torch.no_grad():
+                p=self.predict_mean(X)
+                e = torch.sum(- p * torch.log(p),dim=1)
+                entropies_in_sample.append(e)
+        entropies_in_sample = torch.cat(entropies_in_sample,dim=0)
+        true_labels.append(torch.ones_like(entropies_in_sample))
+
+        entropies_out_sample=[]
+        for i, (X, y) in tqdm.tqdm(enumerate(self.OOB_loader)):
+            X = X.float().to(self.device)
+            # y = y.to(self.device)
+            with torch.no_grad():
+                p=self.predict_mean(X)
+                e = torch.sum(- p * torch.log(p),dim=1)
+                entropies_out_sample.append(e)
+        entropies_out_sample = torch.cat(entropies_out_sample, dim=0)
+        true_labels.append(torch.zeros_like(entropies_out_sample))
+        all_entropies = torch.cat([entropies_in_sample,entropies_out_sample],dim=0)
+        true_labels = torch.cat(true_labels,dim=0)
+        auc=self.get_auc(all_entropies,true_labels,self.auc_interval)
+        return auc
     def train_loop(self,opt):
         self.vi_obj.train()
         for i,(X,y) in tqdm.tqdm(enumerate(self.dataloader_train)):
@@ -420,15 +479,16 @@ class experiment_classification_object():
             opt.step()
 
     def fit(self):
-        # for p in self.vi_obj.parameters():
-        #     print(p)
+
         for i in range(self.train_params['epochs']):
             self.train_loop(self.opt)
-            self.validation_loop('val')
-            self.validation_loop('test')
-        print(self.vi_obj.r.scale)
-        # for i in range(self.train_params['epochs']):
-        #     self.train_loop(opt,False)
+            val_acc,val_nll=self.validation_loop('val')
+        test_ood_auc = self.OOD_AUC('test')
+        val_ood_auc = self.OOD_AUC('val')
+        val_acc,val_nll=self.validation_loop('val')
+        test_acc,test_nll=self.validation_loop('test')
+        return val_acc,val_nll,val_ood_auc,test_acc,test_nll,test_ood_auc
+
     def run(self):
         if os.path.exists(self.save_path + 'hyperopt_database.p'):
             return
@@ -449,6 +509,8 @@ class experiment_classification_object():
 
     def predict_uncertainty(self, x_test):
         return self.vi_obj.posterior_variance(x_test)
+
+
 
 
 

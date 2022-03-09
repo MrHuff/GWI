@@ -179,6 +179,22 @@ def get_dataloaders(dataset_string,batch_size,val_factor):
     test_loader = DataLoader(test_set,batch_size=batch_size)
     return train_loader,val_loader,test_loader
 
+def get_dataloaders_OOB(dataset_string,batch_size):
+    if dataset_string=='CIFAR10':
+        dataset=SVHN( root="../data",
+        split='train',
+        download=True,
+        transform=ToTensor())
+
+    elif dataset_string=='FashionMNIST':
+        dataset=MNIST( root="../data",
+        train=True,
+        download=True,
+        transform=Compose([Pad(2),ToTensor()]))
+
+    train_loader = DataLoader(dataset,batch_size=batch_size)
+    return train_loader
+
 # if __name__ == '__main__':
 #     dataset=FashionMNIST( root="../data",
 #     train=True,

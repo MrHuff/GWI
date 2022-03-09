@@ -251,9 +251,9 @@ class GVI_binary_classification(GWI):
             return self.m_q(X)._sigmoid()
 
 class GVI_multi_classification(torch.nn.Module):
-    def __init__(self,m_q,m_p,k_list,r_list,Z,reg=1e-3,sigma=1.0,eps=0.1):
+    def __init__(self,m_q,m_p,k_list,r_list,Z,reg=1e-3,sigma=1.0,eps=0.01,num_classes=10):
         super(GVI_multi_classification, self).__init__()
-        self.eps=eps
+
         self.r = r_list #module list
         self.m_q = m_q #convnet
         self.sigma = sigma
@@ -265,11 +265,16 @@ class GVI_multi_classification(torch.nn.Module):
         self.register_buffer('big_eye', 100. * torch.eye(self.m))
         self.register_buffer('Z', Z)
         self.U_calculated = False
-        roots,weights=get_hermite_weights(100)
+        roots,weights=get_hermite_weights(50)
         self.register_buffer('gh_roots',roots.unsqueeze(0))
         self.register_buffer('gh_weights',weights.unsqueeze(0))
         self.dist = Normal(0,1)
         self.register_buffer('const_remove',torch.log(self.dist.cdf(2**0.5*self.gh_roots)+1e-3))
+        self.register_buffer('const_divide',self.dist.cdf(2**0.5*self.gh_roots)+1e-3)
+        self.register_buffer('log_1_minus_eps',torch.log(torch.tensor(1-eps)))
+        self.register_buffer('log_1_over_eps',torch.log(torch.tensor(eps/(num_classes-1))))
+        self.eps=eps
+        self.num_classes = num_classes
 
     def calculate_U(self):
         self.k_hat=self.k(self.Z).evaluate()
@@ -287,6 +292,7 @@ class GVI_multi_classification(torch.nn.Module):
 
         lamb_U_cut=(1./(lamb_U_cut**0.5)).unsqueeze(-1)
         self.register_buffer('M',lamb_U_cut@lamb_U_cut.t())
+        self.mpq_eye = torch.eye(self.M.shape[0]).to(self.M.device)*self.reg
             # return U_slim,torch.sum(lamb_U_cut),lamb_U_cut@lamb_U_cut.t()
 
     def calculate_U_list(self):
@@ -299,20 +305,26 @@ class GVI_multi_classification(torch.nn.Module):
 
         self.U=[]
         self.M=[]
+        self.mpq_eye=[]
         if not self.APQ:
             for k_hat in self.k_hat:
                 lamb_U,U= torch.symeig(k_hat+self.big_eye, eigenvectors=True)
                 lamb_U = lamb_U-torch.diag(self.big_eye)
-                mask = lamb_U>1e-2
+                mask = lamb_U>1e-4
                 lamb_U_cut = lamb_U[mask]
                 # self.eff_m = torch.sum(mask).item()
                 # print('eff m ', self.eff_m)
                 U_slim = U[:,mask]
                 self.U.append(U_slim)
                 lamb_U_cut=(1./(lamb_U_cut**0.5)).unsqueeze(-1)
-                self.M.append(lamb_U_cut@lamb_U_cut.t())
+                m=lamb_U_cut@lamb_U_cut.t()
+                self.M.append(m)
+                self.mpq_eye.append(torch.eye(m.shape[0]).to(m.device)*self.reg)
         self.U=torch.stack(self.U,dim=0)
         self.M=torch.stack(self.M,dim=0)
+        self.mpq_eye=torch.stack(self.mpq_eye,dim=0)
+
+
 
     def calculate_V(self): #Pretty sure this is just the Nyström approximation to the inverse haha!
         self.r_mat=[]
@@ -337,7 +349,7 @@ class GVI_multi_classification(torch.nn.Module):
         V_hat_batch = torch.stack(V_hat_mu,dim=0)
         one=rk_hat_batch@self.U#rk_hatself.U
         res = torch.linalg.solve(V_hat_batch,one)
-        res = one.permute(0,2,1)@res * self.M /(X.shape[0])**2
+        res = one.permute(0,2,1)@res * self.M/(X.shape[0])**2
 
 
         return res,trace_Q,self.tr_P#/self.m
@@ -345,14 +357,14 @@ class GVI_multi_classification(torch.nn.Module):
     def calc_hard_tr_term(self,X):
         mpq,tr_Q_mat,tr_P_mat=self.get_MPQ(X)
         # eig,v =  torch.symeig(mpq, eigenvectors=True)
-        eig =  torch.linalg.eigvalsh(mpq)
+        eig =  torch.linalg.eigvalsh(mpq+self.mpq_eye)
         eig = eig[eig>0]
         return  -2*torch.sum(eig**0.5),tr_Q_mat,tr_P_mat
 
     def likelihood_reg(self,y,X):
-        pred = self.m_q(X)
-        h = torch.softmax(pred,dim=1)
-        tmp=torch.ones_like(pred)*self.m_p
+        h = self.m_q(X)
+        # h = torch.softmax(pred,dim=1)
+        tmp=torch.ones_like(h)*self.m_p
         reg = torch.sum((h-tmp)**2)**0.5
         return h,reg
 
@@ -367,15 +379,31 @@ class GVI_multi_classification(torch.nn.Module):
         trq_j = 2**0.5  * torch.gather(sq_trq_mat,1,y.unsqueeze(-1))  * self.gh_roots +torch.gather(mean_pred,1,y.unsqueeze(-1))
         cdf_term= (trq_j.unsqueeze(1)-mean_pred.unsqueeze(-1))/sq_trq_mat.unsqueeze(-1)
         # full = torch.log(self.dist.cdf(cdf_term) +1e-3).sum(1)-self.const_remove
+        # full = torch.sigmoid(cdf_term*CDF_APPROX_COEFF).prod(1)/self.const_divide
         full = -torch.log(1+torch.exp(-cdf_term*CDF_APPROX_COEFF)).sum(1)-self.const_remove
         S = torch.sum(full.exp()*self.gh_weights,-1)/sqrt_pi
-        L=-torch.log(S)-torch.log(1-S)
+        # S = torch.sum(full*self.gh_weights,-1)/sqrt_pi
+        L=-(self.log_1_minus_eps*S+self.log_1_over_eps*(1-S))
         D = (hard_trace + tr_Q + reg)
         return L.sum(),D
 
     def mean_pred(self,X):
         with torch.no_grad():
-            return self.m_q(X).softmax(dim=1)
+            m_q = self.m_q(X)
+            sq_trq_mat = []
+            x_flattened = X.flatten(1).unsqueeze(1)
+            for r in self.r:
+                sq_trq_mat.append(r(x_flattened).squeeze())
+            sq_trq_mat = torch.stack(sq_trq_mat, dim=1)
+            # trq_j = 2 ** 0.5 * sq_trq_mat.unsqueeze(-1) * self.gh_roots + m_q
+            trq_j = 2 ** 0.5 * sq_trq_mat.unsqueeze(-1) * self.gh_roots + m_q.unsqueeze(-1)
+            cdf_term = (trq_j.unsqueeze(1) - m_q.unsqueeze(-1).unsqueeze(-1)) / sq_trq_mat.unsqueeze(-1).unsqueeze(-1)
+            # full = torch.log(self.dist.cdf(cdf_term) +1e-3).sum(1)-self.const_remove
+            # full = torch.sigmoid(cdf_term*CDF_APPROX_COEFF).prod(1)/self.const_divide
+            full = -torch.log(1 + torch.exp(-cdf_term * CDF_APPROX_COEFF)).sum(1) - self.const_remove
+            S = torch.sum(full.exp() * self.gh_weights, -1) / sqrt_pi
+            return (1-self.eps)*S + (self.eps/(self.num_classes-1))*(1-S)
+
 
     # def output(self):
 
