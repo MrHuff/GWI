@@ -5,7 +5,7 @@ def load_obj(name,folder):
     with open(f'{folder}' + name, 'rb') as f:
         return pickle.load(f)
 
-
+EPOCHS=500
 def generate_classification_jobs(job_name):
 
     if not os.path.exists(job_name):
@@ -23,7 +23,7 @@ def generate_classification_jobs(job_name):
     h_space = {
         'depth_x': [3],
         'width_x': [8, 16, 32,64],
-        'bs': [50, 100, 250, 1000],
+        'bs': [250,500, 1000],
         'lr': [1e-2, 1e-3],
         'm_P': [0.0, 0.5, 1.0],
         'sigma': [1e-3, 1e-2, 1e-4],
@@ -35,7 +35,7 @@ def generate_classification_jobs(job_name):
     training_params = {
         'patience': 10,
         'device': 'cuda:0',
-        'epochs': 500,
+        'epochs': EPOCHS,
         'model_name': 'GWI',
         'savedir': f'{job_name}_results',
         'seed': 0,
@@ -71,7 +71,7 @@ def generate_regression_jobs(job_name):
     h_space = {
         'depth_x': [2],
         'width_x': [10],
-        'bs': [50,100,250,1000],
+        'bs': [100,250,500,1000],
         'lr': [1e-2,1e-3],
         'm_P': [0.0, 0.5,1.0],
         'sigma': [1e-3,1e-2,1e-4],
@@ -79,9 +79,9 @@ def generate_regression_jobs(job_name):
         'm':[10,50,100],
     }
     training_params = {
-        'patience': 10,
+        'patience': 50,
         'device': 'cuda:0',
-        'epochs': 500,
+        'epochs': EPOCHS,
         'model_name': 'GWI',
         'savedir': f'{job_name}_results',
         'seed': 0,

@@ -46,7 +46,8 @@ training_params = {
                    'hyperits':2
                    }
 if __name__ == '__main__':
-    dataset="concrete"
+    # ['housing', 'concrete', 'energy', 'power', 'wine', 'yacht', 'naval', 'KIN8NM']
+    dataset="KIN8NM"
     fold=0
     training_params['fold']=fold
     training_params['dataset']=dataset

@@ -9,6 +9,7 @@ import tqdm
 from hyperopt import hp,tpe,Trials,fmin,space_eval,STATUS_OK,STATUS_FAIL,rand
 import pickle
 from utils.classification_dataloaders import *
+import dill
 
 def covar_dist(x1,x2):
     adjustment = x1.mean(-2, keepdim=True)
@@ -113,7 +114,7 @@ class mvp_experiment_object():
 
     def train_loop(self,opt,tr_m=True):
         self.dataloader.dataset.set('train')
-        for i,(X,x_cat,y) in tqdm.tqdm(enumerate(self.dataloader)):
+        for i,(X,x_cat,y) in enumerate(tqdm.tqdm(self.dataloader)):
             if not isinstance(x_cat,list):
                 x_cat=x_cat.to(self.device)
             X=X.to(self.device)
@@ -161,8 +162,8 @@ class experiment_regression_object():
             os.makedirs(self.save_path)
 
     def dump_model(self,hyperit):
-        torch.save(self.vi_obj, self.save_path+f'best_model_{hyperit}.pt')
-
+        model_copy = dill.dumps(self.vi_obj)
+        torch.save(model_copy, self.save_path+f'best_model_{hyperit}.pt')
     def __call__(self,parameters_in):
         self.dataloader = get_regression_dataloader(dataset=self.train_params['dataset'],fold=self.train_params['fold'],bs=parameters_in['bs'])
         self.n,self.d = self.dataloader.dataset.train_X.shape
@@ -216,8 +217,8 @@ class experiment_regression_object():
     def get_kernels(self,string):
         if string=='rbf':
             l = RBFKernel()
-            # ls=get_median_ls(self.X).to(self.device)
-            # l._set_lengthscale(ls)
+            ls=get_median_ls(self.X).to(self.device)
+            l._set_lengthscale(ls)
             k = ScaleKernel(l)
             k._set_outputscale(self.VI_params['y_var'])
             ls_obj=ls_init(k,self.Y_Z,self.Z,sigma=self.VI_params['sigma']).to(self.device)
@@ -236,7 +237,7 @@ class experiment_regression_object():
         self.dataloader.dataset.set(mode)
         losses=0.0
         obs_size=0
-        for i,(X,x_cat,y) in tqdm.tqdm(enumerate(self.dataloader)):
+        for i,(X,x_cat,y) in enumerate(tqdm.tqdm(self.dataloader)):
             X = X.to(self.device)
             y = y.to(self.device)
             obs_size+=y.shape[0]
@@ -249,12 +250,15 @@ class experiment_regression_object():
     def train_loop(self,opt):
         self.vi_obj.train()
         self.dataloader.dataset.set('train')
-        for i,(X,x_cat,y) in tqdm.tqdm(enumerate(self.dataloader)):
+        pbar= tqdm.tqdm(self.dataloader)
+
+        for i,(X,x_cat,y) in enumerate(pbar):
             X=X.to(self.device)
             y=y.to(self.device)
             log_loss,D=self.vi_obj.get_loss(y,X)
-            print('D: ',D.item())
-            print('log_loss: ',log_loss.item())
+            pbar.set_description(f"D: {D.item()} log_loss: {log_loss.item() }")
+            # print('D: ',D.item())
+            # print('log_loss: ',log_loss.item())
                 # print(self.r.lengthscale)
             tot_loss = D + log_loss
             opt.zero_grad()
@@ -262,22 +266,27 @@ class experiment_regression_object():
             opt.step()
 
     def fit(self):
-        best=np.inf
-        counter=0
-        for i in range(self.train_params['epochs']):
-            self.train_loop(self.opt)
-            validation_loss=self.validation_loop('val')
-            if validation_loss<best:
-                best=validation_loss
-                self.dump_model(self.global_hyperit)
-            else:
-                counter+=1
-                if counter>self.train_params['patience']:
-                    break
+        try:
+            best=np.inf
+            counter=0
+            for i in range(self.train_params['epochs']):
+                self.train_loop(self.opt)
+                validation_loss=self.validation_loop('val')
+                if validation_loss<best:
+                    best=validation_loss
+                    self.dump_model(self.global_hyperit)
+                else:
+                    counter+=1
+                    if counter>self.train_params['patience']:
+                        break
 
-        validation_loss=self.validation_loop('val')
-        test_loss = self.validation_loop('test')
-        return validation_loss,test_loss
+            validation_loss=self.validation_loop('val')
+            test_loss = self.validation_loop('test')
+            return validation_loss,test_loss
+        except Exception as e:
+            torch.cuda.empty_cache()
+            return 9999999,999999
+
     def run(self):
         if os.path.exists(self.save_path + 'hyperopt_database.p'):
             return
@@ -333,7 +342,7 @@ class experiment_classification_object():
         # self.dataloader = get_regression_dataloader(dataset=self.train_params['dataset'],fold=self.train_params['fold'],bs=self.train_params['bs'])
         x_list=[]
         y_list=[]
-        for i,(X,y) in tqdm.tqdm(enumerate(self.dataloader_train)):
+        for i,(X,y) in enumerate(tqdm.tqdm(self.dataloader_train)):
             x_list.append(X)
             y_list.append(y)
         self.X=torch.cat(x_list,dim=0)
@@ -351,10 +360,10 @@ class experiment_classification_object():
         }
         self.m_q = conv_net_classifier(**nn_params).to(self.device)
 
-        if self.n>self.VI_params['m']:
-            z_mask=torch.randperm(self.n)[:self.VI_params['m']]
+        if self.n>parameters_in['m']:
+            z_mask=torch.randperm(self.n)[:parameters_in['m']]
             self.Z =  self.X[z_mask].flatten(1).float()
-            self.X_hat =  self.X[torch.randperm(self.n)[:self.VI_params['m']]].flatten(1).float()
+            self.X_hat =  self.X[torch.randperm(self.n)[:parameters_in['m']]].flatten(1).float()
             self.Y_Z= self.Y[z_mask,:].float()
 
         else:
@@ -394,8 +403,8 @@ class experiment_classification_object():
     def get_kernels(self,string):
         if string=='rbf':
             l = RBFKernel()
-            # ls=get_median_ls(self.X).to(self.device)
-            # l._set_lengthscale(ls)
+            ls=get_median_ls(self.X).to(self.device)
+            l._set_lengthscale(ls)
             k = ScaleKernel(l)
             k._set_outputscale(self.VI_params['y_var'])
             ls_obj=ls_init(k,self.Y_Z,self.Z,sigma=self.VI_params['sigma']).to(self.device)
@@ -417,7 +426,7 @@ class experiment_classification_object():
         nll=0.0
         n=0
         acc=[]
-        for i, (X, y) in tqdm.tqdm(enumerate(dl)):
+        for i, (X, y) in enumerate(tqdm.tqdm(dl)):
             X = X.float().to(self.device)
             y = y.to(self.device)
             with torch.no_grad():
@@ -451,7 +460,7 @@ class experiment_classification_object():
 
         true_labels=[]
         entropies_in_sample=[]
-        for i, (X, y) in tqdm.tqdm(enumerate(dl)):
+        for i, (X, y) in enumerate(tqdm.tqdm(dl)):
             X = X.float().to(self.device)
             # y = y.to(self.device)
             with torch.no_grad():
@@ -462,7 +471,7 @@ class experiment_classification_object():
         true_labels.append(torch.ones_like(entropies_in_sample))
 
         entropies_out_sample=[]
-        for i, (X, y) in tqdm.tqdm(enumerate(self.OOB_loader)):
+        for i, (X, y) in enumerate(tqdm.tqdm(self.OOB_loader)):
             X = X.float().to(self.device)
             # y = y.to(self.device)
             with torch.no_grad():
@@ -477,13 +486,20 @@ class experiment_classification_object():
         return auc
     def train_loop(self,opt):
         self.vi_obj.train()
-        for i,(X,y) in tqdm.tqdm(enumerate(self.dataloader_train)):
+        pbar= tqdm.tqdm(self.dataloader_train)
+        for i,(X,y) in enumerate(pbar):
+
             X=X.float().to(self.device)
             y=y.to(self.device)
 
             log_loss,D=self.vi_obj.get_loss(y,X)
-            print('D: ',D.item())
-            print('log_loss: ',log_loss.item())
+            pbar.set_description(f"D: {D.item()} log_loss: {log_loss.item() }")
+
+            # pbar.set_description("D %f" % D.item())
+            # pbar.set_description("log_loss %f" % log_loss.item())
+
+            # print('D: ',D.item())
+            # print('log_loss: ',log_loss.item())
                 # print(self.r.lengthscale)
             tot_loss = D + log_loss
             opt.zero_grad()
@@ -493,24 +509,29 @@ class experiment_classification_object():
     def fit(self):
         best=0.0
         counter=0
-        for i in range(self.train_params['epochs']):
-            self.train_loop(self.opt)
+        try:
+            for i in range(self.train_params['epochs']):
+                self.train_loop(self.opt)
+                val_acc,val_nll=self.validation_loop('val')
+                if val_acc>best:
+                    best=val_acc
+                    self.dump_model(self.global_hyperit)
+                else:
+                    counter+=1
+                    if counter>self.train_params['patience']:
+                        break
+            test_ood_auc = self.OOD_AUC('test')
+            val_ood_auc = self.OOD_AUC('val')
             val_acc,val_nll=self.validation_loop('val')
-            if val_acc>best:
-                best=val_acc
-                self.dump_model(self.global_hyperit)
-            else:
-                counter+=1
-                if counter>self.train_params['patience']:
-                    break
-        test_ood_auc = self.OOD_AUC('test')
-        val_ood_auc = self.OOD_AUC('val')
-        val_acc,val_nll=self.validation_loop('val')
-        test_acc,test_nll=self.validation_loop('test')
-        return val_acc,val_nll,val_ood_auc,test_acc,test_nll,test_ood_auc
+            test_acc,test_nll=self.validation_loop('test')
+            return val_acc,val_nll,val_ood_auc,test_acc,test_nll,test_ood_auc
+        except Exception as e:
+            torch.cuda.empty_cache()
+            return -99999,-99999,-99999,-99999,-99999,-99999
 
     def dump_model(self,hyperit):
-        torch.save(self.vi_obj, self.save_path+f'best_model_{hyperit}.pt')
+        model_copy = dill.dumps(self.vi_obj)
+        torch.save(model_copy, self.save_path+f'best_model_{hyperit}.pt')
 
     def run(self):
         if os.path.exists(self.save_path + 'hyperopt_database.p'):

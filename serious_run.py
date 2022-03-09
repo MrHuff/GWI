@@ -16,7 +16,14 @@ if __name__ == '__main__':
     jobs = os.listdir(fold)
     jobs.sort()
     print(jobs[idx])
-    experiment_params = load_obj(jobs[idx],folder=f'{fold}/')
-    c = experiment_object(**experiment_params)
-    c.debug_mode=True
-    c.run_experiments()
+    job_params = load_obj(jobs[idx], folder=f'{fold}/')
+    h_space = job_params['h_space']
+    VI_params = job_params['VI_params']
+    training_params = job_params['training_params']
+    if training_params['regression']:
+        e = experiment_regression_object(hyper_param_space=h_space, VI_params=VI_params, train_params=training_params)
+    else:
+        e = experiment_classification_object(hyper_param_space=h_space, VI_params=VI_params,
+                                             train_params=training_params)
+    e.run()
+

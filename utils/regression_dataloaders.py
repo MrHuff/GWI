@@ -88,7 +88,7 @@ class UCIDatasets():
             self.data = data[np.random.permutation(np.arange(len(data)))]
         elif self.name == "power":
             zipfile.ZipFile(self.data_path + "UCI/CCPP.zip").extractall(self.data_path + "UCI/CCPP/")
-            data = pd.read_excel(self.data_path + 'UCI/CCPP/Folds5x2_pp.xlsx', header=0).values
+            data = pd.read_excel(self.data_path + 'UCI/CCPP/CCPP/Folds5x2_pp.xlsx', header=0).values
             np.random.shuffle(data)
             self.data = data
         elif self.name == "wine":
@@ -102,35 +102,39 @@ class UCIDatasets():
             self.data = data[np.random.permutation(np.arange(len(data)))]
 
         elif self.name == "naval":
-            zipfile.ZipFile(self.data_path + "UCI/UCI CBM Dataset.zip").extractall(self.data_path + "UCI/UCI CBM Dataset/")
+            zipfile.ZipFile(self.data_path + "UCI/CBM_Dataset.zip").extractall(self.data_path + "UCI/UCI CBM Dataset/")
 
-            data = pd.read_csv(self.data_path + 'UCI/data.txt',
+            data = pd.read_csv(self.data_path + 'UCI/UCI CBM Dataset/UCI CBM Dataset/data.txt',
                                header=0, delimiter='\s+').values
             self.data = data[np.random.permutation(np.arange(len(data)))]
 
         elif self.name == "KIN8NM":
             data = pd.read_csv(self.data_path + 'UCI/dataset_2175_kin8nm.csv',
-                               header=1, delimiter='\s+').values
+                               header=1).values
             self.data = data[np.random.permutation(np.arange(len(data)))]
-
+        self.data = self.data.astype('float')
         kf = KFold(n_splits=self.n_splits)
         self.in_dim = data.shape[1] - 1
         self.out_dim = 1
         self.data_splits = kf.split(data)
         self.data_splits = [(idx[0], idx[1]) for idx in self.data_splits]
 
+
+
     def get_split(self, split=-1):
 
         if split == -1:
             split = 0
 
-        if 0<=split and split<self.n_splits:
+        if 0<=split and split<=self.n_splits:
             train_index, test_index = self.data_splits[split]
             x_train, y_train = self.data[train_index,
                                     :self.in_dim], self.data[train_index, self.in_dim:]
             x_test, y_test = self.data[test_index, :self.in_dim], self.data[test_index, self.in_dim:]
             x_means, x_stds = x_train.mean(axis=0), x_train.var(axis=0)**0.5
             y_means, y_stds = y_train.mean(axis=0), y_train.var(axis=0)**0.5
+            x_stds[x_stds==0]=1.0
+            y_stds[y_stds==0]=1.0
             x_train = (x_train - x_means)/x_stds
             y_train = (y_train - y_means)/y_stds
             x_test = (x_test - x_means)/x_stds
