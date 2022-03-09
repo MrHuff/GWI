@@ -13,7 +13,6 @@ nn_params = {
     'output_dim': 1,
 }
 VI_params={
-    'm':100,
     'q_kernel':'r_param',
     'p_kernel':'rbf',
     'sigma':1e-4,
@@ -32,6 +31,7 @@ h_space={
     'm_P':[0.0,0.5],
     'sigma':[1e-3],
     'transformation':[torch.tanh],
+    'm':[100]
 }
 
 training_params = {
@@ -46,7 +46,7 @@ training_params = {
                    'hyperits':2
                    }
 if __name__ == '__main__':
-    dataset="housing"
+    dataset="concrete"
     fold=0
     training_params['fold']=fold
     training_params['dataset']=dataset

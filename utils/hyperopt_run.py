@@ -83,6 +83,7 @@ class mvp_experiment_object():
         dataset=general_custom_dataset(X,Y,nn_params['cat_size_list'])
         self.dataloader=custom_dataloader(dataset,train_params['bs'])
 
+
     def get_kernels(self,string,is_q=False):
         if string=='rbf':
             l = RBFKernel()
@@ -144,9 +145,10 @@ class experiment_regression_object():
         self.train_params=train_params
         self.VI_params = VI_params
         self.device = device
-        self.hyperopt_params = ['transformation', 'depth_x', 'width_x', 'bs', 'lr','m_P','sigma']
+        self.hyperopt_params = ['transformation', 'depth_x', 'width_x', 'bs', 'lr','m_P','sigma','m']
         self.get_hyperparameterspace(hyper_param_space)
         self.generate_save_path()
+        self.global_hyperit=0
 
     def generate_save_path(self):
         model_name = self.train_params['model_name']
@@ -157,6 +159,9 @@ class experiment_regression_object():
         self.save_path = f'{savedir}/{dataset}_seed={seed}_fold_idx={fold}_model={model_name}/'
         if not os.path.exists(self.save_path):
             os.makedirs(self.save_path)
+
+    def dump_model(self,hyperit):
+        torch.save(self.vi_obj, self.save_path+f'best_model_{hyperit}.pt')
 
     def __call__(self,parameters_in):
         self.dataloader = get_regression_dataloader(dataset=self.train_params['dataset'],fold=self.train_params['fold'],bs=parameters_in['bs'])
@@ -173,11 +178,11 @@ class experiment_regression_object():
         }
         self.m_q = feature_map(**nn_params).to(self.device)
 
-        if self.n>self.VI_params['m']:
-            z_mask=torch.randperm(self.n)[:self.VI_params['m']]
+        if self.n>parameters_in['m']:
+            z_mask=torch.randperm(self.n)[:parameters_in['m']]
             self.Z =  self.X[z_mask, :]
             self.Y_Z= self.Y[z_mask,:]
-            self.X_hat =  self.X[torch.randperm(self.n)[:self.VI_params['m']], :]
+            self.X_hat =  self.X[torch.randperm(self.n)[:parameters_in['m']], :]
         else:
             self.Z=self.X
         self.k=self.get_kernels(self.VI_params['p_kernel'])
@@ -195,6 +200,7 @@ class experiment_regression_object():
         self.opt=torch.optim.Adam(self.vi_obj.parameters(),lr=parameters_in['lr'])
 
         val_loss,test_loss=self.fit()
+        self.global_hyperit+=1
         return  {'loss': val_loss,
                 'status': STATUS_OK,
                 'test_loss': test_loss,
@@ -257,11 +263,17 @@ class experiment_regression_object():
 
     def fit(self):
         best=np.inf
+        counter=0
         for i in range(self.train_params['epochs']):
             self.train_loop(self.opt)
             validation_loss=self.validation_loop('val')
             if validation_loss<best:
                 best=validation_loss
+                self.dump_model(self.global_hyperit)
+            else:
+                counter+=1
+                if counter>self.train_params['patience']:
+                    break
 
         validation_loss=self.validation_loop('val')
         test_loss = self.validation_loop('test')
@@ -292,12 +304,12 @@ class experiment_classification_object():
         self.train_params=train_params
         self.VI_params = VI_params
         self.device = device
-        self.hyperopt_params = ['depth_x', 'width_x','depth_fc', 'bs', 'lr','m_P','sigma','transformation']
+        self.hyperopt_params = ['depth_x', 'width_x','depth_fc', 'bs', 'lr','m_P','sigma','transformation','m']
         self.get_hyperparameterspace(hyper_param_space)
         self.generate_save_path()
         self.log_upper_bound = np.log(self.train_params['output_classes'])
         self.auc_interval = torch.from_numpy(np.linspace(0,self.log_upper_bound,100)).unsqueeze(0).to(device)
-
+        self.global_hyperit=0
     def generate_save_path(self):
         model_name = self.train_params['model_name']
         savedir = self.train_params['savedir']
@@ -362,7 +374,7 @@ class experiment_classification_object():
                         ).to(self.device)
         self.opt=torch.optim.Adam(self.vi_obj.parameters(),lr=parameters_in['lr'])
         val_acc,val_nll,val_ood_auc,test_acc,test_nll,test_ood_auc=self.fit()
-
+        self.global_hyperit+=1
         return {'loss': val_acc,
                 'val_acc':val_acc,
                 'val_nll':val_nll,
@@ -479,15 +491,26 @@ class experiment_classification_object():
             opt.step()
 
     def fit(self):
-
+        best=0.0
+        counter=0
         for i in range(self.train_params['epochs']):
             self.train_loop(self.opt)
             val_acc,val_nll=self.validation_loop('val')
+            if val_acc>best:
+                best=val_acc
+                self.dump_model(self.global_hyperit)
+            else:
+                counter+=1
+                if counter>self.train_params['patience']:
+                    break
         test_ood_auc = self.OOD_AUC('test')
         val_ood_auc = self.OOD_AUC('val')
         val_acc,val_nll=self.validation_loop('val')
         test_acc,test_nll=self.validation_loop('test')
         return val_acc,val_nll,val_ood_auc,test_acc,test_nll,test_ood_auc
+
+    def dump_model(self,hyperit):
+        torch.save(self.vi_obj, self.save_path+f'best_model_{hyperit}.pt')
 
     def run(self):
         if os.path.exists(self.save_path + 'hyperopt_database.p'):

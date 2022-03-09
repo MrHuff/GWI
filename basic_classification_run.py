@@ -19,7 +19,7 @@ VI_params={
     'm':100,
     'q_kernel':'r_param',
     'p_kernel':'rbf',
-    'sigma':1e-4,
+    'sigma':1.0,
     'm_p':0.0,
     'reg':1e-2,
     'r':50,

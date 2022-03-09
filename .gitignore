@@ -5,6 +5,7 @@ __pycache__/
 *.png
 *.idea
 *.pt
+*.pickle
 *.p
 local_UCI_storageUCI
 # C extensions
