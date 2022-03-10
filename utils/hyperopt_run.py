@@ -319,6 +319,7 @@ class experiment_classification_object():
         self.log_upper_bound = np.log(self.train_params['output_classes'])
         self.auc_interval = torch.from_numpy(np.linspace(0,self.log_upper_bound,100)).unsqueeze(0).to(device)
         self.global_hyperit=0
+
     def generate_save_path(self):
         model_name = self.train_params['model_name']
         savedir = self.train_params['savedir']
@@ -348,17 +349,6 @@ class experiment_classification_object():
         self.X=torch.cat(x_list,dim=0)
         self.n= self.X.shape[0]
         self.Y=torch.cat(y_list,dim=0).unsqueeze(-1)
-        nn_params = {
-
-            'cdim':self.train_params['cdim'],
-            'output':self.train_params['output_classes'],
-            'channels':[parameters_in['width_x']]*parameters_in['depth_x'],
-            'image_size':self.train_params['image_size'],
-            'transform': parameters_in['transformation'],
-            'channels_fc':[parameters_in['width_x']]*parameters_in['depth_fc']
-
-        }
-        self.m_q = conv_net_classifier(**nn_params).to(self.device)
 
         if self.n>parameters_in['m']:
             z_mask=torch.randperm(self.n)[:parameters_in['m']]
@@ -368,11 +358,28 @@ class experiment_classification_object():
 
         else:
             self.Z=self.X.flatten(1).float()
-
         self.k = self.get_kernels(self.VI_params['p_kernel'])
         self.r=torch.nn.ModuleList()
         for i in range(self.train_params['output_classes']):
             self.r.append(self.get_kernels(self.VI_params['q_kernel']))
+
+        nn_params = {
+            'cdim':self.train_params['cdim'],
+            'output':self.train_params['output_classes'],
+            'channels':[parameters_in['width_x']]*parameters_in['depth_x'],
+            'image_size':self.train_params['image_size'],
+            'transform': parameters_in['transformation'],
+            'channels_fc':[parameters_in['width_x']]*parameters_in['depth_fc']
+
+        }
+        if self.train_params['m_q_choice']=='kernel_sum':
+            nn_params['k'] = self.k
+            nn_params['Z'] = self.Z
+            self.m_q = conv_net_classifier_kernel(**nn_params).to(self.device)
+        elif self.train_params['m_q_choice']=='CNN':
+            self.m_q = conv_net_classifier(**nn_params).to(self.device)
+
+
         self.vi_obj=GVI_multi_classification(m_q=self.m_q,
                         m_p=parameters_in['m_P'],
                         r_list=self.r,
@@ -450,7 +457,6 @@ class experiment_classification_object():
         print('AUC OOD: ', AUC)
         return AUC
 
-
     def OOD_AUC(self,mode='val'):
         self.vi_obj.eval()
         if mode == 'val':
@@ -509,25 +515,25 @@ class experiment_classification_object():
     def fit(self):
         best=0.0
         counter=0
-        try:
-            for i in range(self.train_params['epochs']):
-                self.train_loop(self.opt)
-                val_acc,val_nll=self.validation_loop('val')
-                if val_acc>best:
-                    best=val_acc
-                    self.dump_model(self.global_hyperit)
-                else:
-                    counter+=1
-                    if counter>self.train_params['patience']:
-                        break
-            test_ood_auc = self.OOD_AUC('test')
-            val_ood_auc = self.OOD_AUC('val')
+        # try:
+        for i in range(self.train_params['epochs']):
+            self.train_loop(self.opt)
             val_acc,val_nll=self.validation_loop('val')
-            test_acc,test_nll=self.validation_loop('test')
-            return val_acc,val_nll,val_ood_auc,test_acc,test_nll,test_ood_auc
-        except Exception as e:
-            torch.cuda.empty_cache()
-            return -99999,-99999,-99999,-99999,-99999,-99999
+            if val_acc>best:
+                best=val_acc
+                self.dump_model(self.global_hyperit)
+            else:
+                counter+=1
+                if counter>self.train_params['patience']:
+                    break
+        test_ood_auc = self.OOD_AUC('test')
+        val_ood_auc = self.OOD_AUC('val')
+        val_acc,val_nll=self.validation_loop('val')
+        test_acc,test_nll=self.validation_loop('test')
+        return val_acc,val_nll,val_ood_auc,test_acc,test_nll,test_ood_auc
+        # except Exception as e:
+        #     torch.cuda.empty_cache()
+        #     return -99999,-99999,-99999,-99999,-99999,-99999
 
     def dump_model(self,hyperit):
         model_copy = dill.dumps(self.vi_obj)

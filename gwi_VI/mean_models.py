@@ -1,6 +1,7 @@
 import torch
 import torch.nn  as nn
-
+import tensorly
+tensorly.set_backend('pytorch')
 
 class _Residual_Block(nn.Module):
     def __init__(self, inc=64, outc=64, groups=1, scale=1.0):
@@ -64,6 +65,47 @@ class conv_net_classifier(nn.Module):
         y = self.main(x).reshape(x.size(0), -1)
         y = self.fc(y)
         return y
+
+class conv_net_classifier_kernel(nn.Module):
+    def __init__(self,k,Z, cdim=1, output=10, channels=[64, 128, 256, 512, 512, 512], image_size=32,transform=torch.tanh,channels_fc=[]):
+        super(conv_net_classifier_kernel, self).__init__()
+        self.k = k
+        print(self.k)
+        self.register_buffer('Z',Z)
+        self.m = self.Z.shape[0]
+        self.output_tensor = torch.nn.Parameter(torch.randn(self.m,self.m,output))
+
+
+        assert (2 ** len(channels)) * 4 == image_size
+
+        self.output = output
+        cc = channels[0]
+        self.main = nn.Sequential(
+            nn.Conv2d(cdim, cc, 5, 1, 2, bias=False),
+            nn.BatchNorm2d(cc),
+            nn.LeakyReLU(0.2),
+            nn.AvgPool2d(2),
+        )
+
+        sz = image_size // 2
+        for ch in channels[1:]:
+            self.main.add_module('res_in_{}'.format(sz), _Residual_Block(cc, ch, scale=1.0))
+            self.main.add_module('down_to_{}'.format(sz // 2), nn.AvgPool2d(2))
+            cc, sz = ch, sz // 2
+
+        self.main.add_module('res_in_{}'.format(sz), _Residual_Block(cc, cc, scale=1.0))
+        # self.fc = nn.Linear((cc) * 4 * 4, self.output)
+        self.fc = feature_map(d_in_x=(cc) * 4 * 4,layers_x=channels_fc,output_dim=self.m,transformation=transform,cat_size_list=[])
+
+
+    def forward(self, x):
+        y = self.main(x).reshape(x.size(0), -1)
+        y = self.fc(y)
+        y  =tensorly.tenalg.mode_dot(self.output_tensor,y,0)
+        kz = self.k(x.flatten(1),self.Z).evaluate().unsqueeze(-1)
+        output = kz*y
+        return output.sum(1)
+
 
 
 class multi_input_Sequential(torch.nn.Sequential):
@@ -138,3 +180,39 @@ class feature_map(torch.nn.Module):
 
     def forward(self,x_cov,x_cat=[]):
         return self.final_layer(self.covariate_net((x_cov,x_cat)))
+
+
+class kernel_feature_map_regression(torch.nn.Module):
+    def __init__(self,
+                 d_in_x,
+                 cat_size_list,
+                 layers_x,
+                 k,
+                 Z,
+                 transformation=torch.tanh,
+                 output_dim=10,
+                 ):
+        super(kernel_feature_map_regression, self).__init__()
+        self.k = k
+        self.output_dim = output_dim
+        self.register_buffer('Z',Z)
+
+        self.init_covariate_net(d_in_x, layers_x, cat_size_list, transformation, self.Z.shape[0])
+    def identity_transform(self, x):
+        return x
+
+    def init_covariate_net(self, d_in_x, layers_x, cat_size_list, transformation, output_dim):
+        module_list = [
+            nn_node(d_in=d_in_x, d_out=layers_x[0], cat_size_list=cat_size_list, transformation=transformation)]
+        for l_i in range(1, len(layers_x)):
+            module_list.append(
+                nn_node(d_in=layers_x[l_i - 1], d_out=layers_x[l_i], cat_size_list=[], transformation=transformation))
+        self.covariate_net = multi_input_Sequential_res_net(*module_list)
+        self.final_layer = torch.nn.Linear(layers_x[-1], output_dim)
+
+    def forward(self, x_cov, x_cat=[]):
+        feature_map = self.final_layer(self.covariate_net((x_cov, x_cat)))
+        kernel_weights = self.k(x_cov.flatten(1),self.Z).evaluate()
+        output = feature_map*kernel_weights
+        return output.sum(1)
+

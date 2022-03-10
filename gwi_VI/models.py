@@ -91,7 +91,48 @@ class r_param_cholesky(torch.nn.Module):
             # return  (self.k(x1,x2).evaluate() + t_ @ t)
             # return  t_ @ t #self.k(x1,x2).evaluate() + torch.exp(self.scale)* t_ @ t
 
+class r_param_cholesky_scaling(torch.nn.Module):
+    def __init__(self,k,Z,X,sigma,reg=1e-3,scale_init=0.0):
+        super(r_param_cholesky_scaling, self).__init__()
+        self.k = k
+        self.Z = torch.nn.Parameter(Z)
+        self.scale = torch.nn.Parameter(torch.ones(1)*scale_init)
+        self.register_buffer('eye',torch.eye(Z.shape[0]))
+        self.register_buffer('X',X)
+        self.reg=reg
+        self.sigma=sigma
 
+
+    def init_L(self):
+        with torch.no_grad():
+            kx= self.k(self.Z,self.X).evaluate()
+            kzz =self.k(self.Z).evaluate()
+            L = torch.inverse(torch.linalg.cholesky(kzz+kx@kx.t()+1./self.sigma**0.5*self.eye))
+            # print(L)
+        self.L = torch.nn.Parameter(L)
+
+    def forward(self,x1,x2=None):
+        L = torch.tril(self.L) + self.eye * self.reg
+        if x2 is None:
+            kzx = self.k(self.Z, x1).evaluate()
+            t= L.t() @ kzx
+            if len(t.shape)==3:
+                T_mat = t.permute(0,2,1) @ t
+            else:
+                T_mat = t.t() @ t
+            sol = torch.linalg.solve(self.k(self.Z).evaluate(),kzx)
+            return (self.k(x1).evaluate()- kzx.t()@sol + T_mat*torch.exp(self.scale))
+            # return (self.k(x1).evaluate() + t.t() @ t)
+            # return  t.t() @ t #torch.exp(self.scale)*t.t() @ t  + self.k(x1).evaluate()
+        else:
+            kzx_1 = self.k(self.Z, x1).evaluate()
+            kzx_2 = self.k(self.Z, x2).evaluate()
+            t= L.t() @ kzx_2
+            t_ = kzx_1 @ self.L
+            sol = torch.linalg.solve(self.k(self.Z).evaluate(),kzx_2)
+            return  (self.k(x1,x2).evaluate()- kzx_1.t()@sol +  t_ @ t*torch.exp(self.scale))
+            # return  (self.k(x1,x2).evaluate() + t_ @ t)
+            # return  t_ @ t #self.k(x1,x2).evaluate() + torch.exp(self.scale)* t_ @ t
 # U matrix is eigenvector matrix of k, which is associated with P
 # V matrix is eivenmatrix matrix of r, which is associated with Q
 
@@ -319,7 +360,7 @@ class GVI_multi_classification(torch.nn.Module):
                 lamb_U_cut=(1./(lamb_U_cut**0.5)).unsqueeze(-1)
                 m=lamb_U_cut@lamb_U_cut.t()
                 self.M.append(m)
-                self.mpq_eye.append(torch.eye(m.shape[0]).to(m.device)*self.reg)
+                self.mpq_eye.append(torch.eye(m.shape[0]).to(m.device))
         self.U=torch.stack(self.U,dim=0)
         self.M=torch.stack(self.M,dim=0)
         self.mpq_eye=torch.stack(self.mpq_eye,dim=0)
