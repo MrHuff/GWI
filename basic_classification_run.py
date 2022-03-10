@@ -41,7 +41,7 @@ training_params = {
                     'image_size':32,
                     'cdim':3,
                     'dataset':'CIFAR10',
-                    'm_q_choice':'kernel_sum'
+                    'm_q_choice':'CNN' #CNN,kernel_sum
                    }
 
 h_space={

@@ -5,7 +5,7 @@ import os
 
 if __name__ == '__main__':
 
-    fold = 'first_run_class'
+    fold = 'first_run_reg'
     jobs = os.listdir(fold)
     jobs.sort()
     print(jobs)

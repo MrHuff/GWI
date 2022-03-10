@@ -45,7 +45,9 @@ def generate_classification_jobs(job_name):
         'output_classes':10,
         'image_size':32,
         'cdim':3,
-        'regression': False
+        'regression': False,
+        'm_q_choice': 'CNN'
+
     }
     for ds,c in zip(dataset,[1,3]):
         training_params['dataset'] = ds
@@ -87,7 +89,8 @@ def generate_regression_jobs(job_name):
         'seed': 0,
         'fold':0,
         'hyperits': 20,
-        'regression':True
+        'regression':True,
+        'm_q_choice': 'mlp'
     }
     for ds  in dataset:
         training_params['dataset'] = ds

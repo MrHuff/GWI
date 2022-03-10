@@ -184,11 +184,11 @@ class feature_map(torch.nn.Module):
 
 class kernel_feature_map_regression(torch.nn.Module):
     def __init__(self,
+                 k,
+                 Z,
                  d_in_x,
                  cat_size_list,
                  layers_x,
-                 k,
-                 Z,
                  transformation=torch.tanh,
                  output_dim=10,
                  ):

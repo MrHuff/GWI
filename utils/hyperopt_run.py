@@ -177,7 +177,12 @@ class experiment_regression_object():
             'transformation':parameters_in['transformation'],
             'layers_x': [parameters_in['width_x']]*parameters_in['depth_x'],
         }
-        self.m_q = feature_map(**nn_params).to(self.device)
+        if self.train_params['m_q_choice']=='kernel_sum':
+            nn_params['k'] = self.k
+            nn_params['Z'] = self.Z
+            self.m_q = kernel_feature_map_regression(**nn_params).to(self.device)
+        elif self.train_params['m_q_choice']=='mlp':
+            self.m_q = feature_map(**nn_params).to(self.device)
 
         if self.n>parameters_in['m']:
             z_mask=torch.randperm(self.n)[:parameters_in['m']]
@@ -224,10 +229,13 @@ class experiment_regression_object():
             ls_obj=ls_init(k,self.Y_Z,self.Z,sigma=self.VI_params['sigma']).to(self.device)
             ls_obj.pre_train()
             print(l.lengthscale,k.outputscale)
-
             k.requires_grad_(False)
         elif string=='r_param':
             k = r_param_cholesky(k=self.k,Z=self.Z,X=self.X_hat,sigma=self.VI_params['sigma']).to(self.device)
+            k.init_L()
+        elif string == 'r_param_scaling':
+            k = r_param_cholesky_scaling(k=self.k, Z=self.Z, X=self.X_hat, sigma=self.VI_params['sigma']).to(
+                self.device)
             k.init_L()
 
         return k
@@ -245,6 +253,7 @@ class experiment_regression_object():
                 log_loss, D = self.vi_obj.get_loss(y, X)
             losses+=log_loss.item()
         validation_loss_log_likelihood = losses/obs_size
+        print(f'held out {mode} nll: ',validation_loss_log_likelihood)
         return validation_loss_log_likelihood
 
     def train_loop(self,opt):
@@ -298,9 +307,11 @@ class experiment_regression_object():
                     trials=trials,
                     verbose=True)
         print(space_eval(self.hyperparameter_space, best))
-        pickle.dump(trials,
+        model_copy = dill.dumps(trials)
+        pickle.dump(model_copy,
                     open(self.save_path + 'hyperopt_database.p',
                          "wb"))
+
 
     def predict_mean(self,x_test):
         return self.vi_obj.mean_pred(x_test)
@@ -409,7 +420,7 @@ class experiment_classification_object():
 
     def get_kernels(self,string):
         if string=='rbf':
-            l = RBFKernel()
+            l = RBFKernel(ard_num_dims=self.Z.shape[1])
             ls=get_median_ls(self.X).to(self.device)
             l._set_lengthscale(ls)
             k = ScaleKernel(l)
@@ -417,11 +428,15 @@ class experiment_classification_object():
             ls_obj=ls_init(k,self.Y_Z,self.Z,sigma=self.VI_params['sigma']).to(self.device)
             ls_obj.pre_train()
             print(l.lengthscale,k.outputscale)
-
             k.requires_grad_(False)
+            l.requires_grad_(False)
         elif string=='r_param':
             k = r_param_cholesky(k=self.k,Z=self.Z,X=self.X_hat,sigma=self.VI_params['sigma']).to(self.device)
             k.init_L()
+        elif string == 'r_param_scaling':
+            k = r_param_cholesky_scaling(k=self.k, Z=self.Z, X=self.X_hat, sigma=self.VI_params['sigma']).to(self.device)
+            k.init_L()
+
         return k
 
     def validation_loop(self,mode='val'): #acc and nll
@@ -490,6 +505,7 @@ class experiment_classification_object():
         true_labels = torch.cat(true_labels,dim=0)
         auc=self.get_auc(all_entropies,true_labels,self.auc_interval)
         return auc
+
     def train_loop(self,opt):
         self.vi_obj.train()
         pbar= tqdm.tqdm(self.dataloader_train)
@@ -519,8 +535,10 @@ class experiment_classification_object():
         for i in range(self.train_params['epochs']):
             self.train_loop(self.opt)
             val_acc,val_nll=self.validation_loop('val')
+            print(self.k.outputscale,self.k.base_kernel.lengthscale)
             if val_acc>best:
                 best=val_acc
+                print('woho new best model!')
                 self.dump_model(self.global_hyperit)
             else:
                 counter+=1
@@ -550,7 +568,8 @@ class experiment_classification_object():
                     trials=trials,
                     verbose=True)
         print(space_eval(self.hyperparameter_space, best))
-        pickle.dump(trials,
+        model_copy = dill.dumps(trials)
+        pickle.dump(model_copy,
                     open(self.save_path + 'hyperopt_database.p',
                          "wb"))
 

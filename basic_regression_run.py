@@ -24,12 +24,12 @@ VI_params={
 
 }
 h_space={
-    'depth_x':[3],
-    'width_x':[8,16,32],
+    'depth_x':[2],
+    'width_x':[10],
     'bs':[1000],
     'lr':[1e-2],
     'm_P':[0.0,0.5],
-    'sigma':[1e-3],
+    'sigma':[1e-4],
     'transformation':[torch.tanh],
     'm':[100]
 }
@@ -43,7 +43,8 @@ training_params = {
                    'model_name':'GWI',
                    'savedir':'regression_test_2',
                    'seed':0,
-                   'hyperits':2
+                   'hyperits':2,
+                    'm_q_choice':'mlp'
                    }
 if __name__ == '__main__':
     # ['housing', 'concrete', 'energy', 'power', 'wine', 'yacht', 'naval', 'KIN8NM']
