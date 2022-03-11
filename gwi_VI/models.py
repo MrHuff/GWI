@@ -118,8 +118,8 @@ class r_param_cholesky_scaling(torch.nn.Module):
         if x2 is None:
             kzx = self.k(self.Z, x1).evaluate()
             t= L.t() @ kzx
-
-            sol = torch.linalg.solve(self.k(self.Z).evaluate(),kzx)
+            chol_ = torch.cholesky(self.k(self.Z).evaluate())
+            sol = torch.cholesky_solve(chol_,kzx)
             if len(t.shape)==3:
                 T_mat = t.permute(0,2,1) @ t
                 return (self.k(x1).evaluate()- kzx.permute(0,2,1)@sol + T_mat)
@@ -133,7 +133,8 @@ class r_param_cholesky_scaling(torch.nn.Module):
             kzx_2 = self.k(self.Z, x2).evaluate()
             t= L.t() @ kzx_2
             t_ = kzx_1 @ self.L
-            sol = torch.linalg.solve(self.k(self.Z).evaluate(),kzx_2)
+            chol_ = torch.cholesky(self.k(self.Z).evaluate())
+            sol = torch.cholesky_solve(chol_,kzx_2)
             return  (self.k(x1,x2).evaluate()- kzx_1.t()@sol +  t_ @ t)
             # return  (self.k(x1,x2).evaluate() + t_ @ t)
             # return  t_ @ t #self.k(x1,x2).evaluate() + torch.exp(self.scale)* t_ @ t
@@ -199,7 +200,11 @@ class GWI(torch.nn.Module):
         # rk_hat =rk_hat.evaluate()
         V_hat_mu,trace_Q= self.calculate_V()
         one= rk_hat@self.U
-        res = torch.linalg.solve(V_hat_mu+self.eye*self.reg,one)
+
+        chol = torch.cholesky(V_hat_mu+self.eye*self.reg)
+        res = torch.cholesky_solve(one,chol) #misbehaving inverse,essentially the R matrix is having trouble staying invertible...
+
+        # res = torch.linalg.solve(V_hat_mu+self.eye*self.reg,one)
         res = one.t()@res * self.M /(X.shape[0])**2
         return res,trace_Q,self.tr_P#/self.m
 
@@ -265,35 +270,6 @@ class GWI(torch.nn.Module):
     def mean_pred(self,X):
         with torch.no_grad():
             return self.m_q(X)
-
-# class GVI_binary_classification(GWI):
-#     def __init__(self,m_q,m_p,k,r,Z,reg=1e-3,sigma=1.0,APQ=False):
-#         super(GVI_binary_classification, self).__init__(m_q,m_p,k,r,Z,reg,sigma,APQ)
-#         roots,weights=get_hermite_weights(100)
-#         self.register_buffer('gh_roots',roots.unsqueeze(0))
-#         self.register_buffer('gh_weights',weights.unsqueeze(0))
-#
-#     def likelihood_reg(self,y,X):
-#         pred = self.m_q(X)
-#         tmp=torch.ones_like(y)*self.m_p
-#         reg = torch.sum((pred-tmp)**2)**0.5
-#         # tmp=self.r(self.Z)
-#         # v,_= torch.symeig(tmp,True)
-#         # v = v[v>0]
-#         return pred,reg#+torch.sum(tmp.diag())/(2*self.sigma)
-#
-#     def get_loss(self,y,X):
-#         hard_trace,tr_Q,tr_P=self.calc_hard_tr_term(X)
-#         mean_pred,reg= self.likelihood_reg(y,X)
-#         D = (hard_trace + tr_Q + reg)
-#         binary_input = (2.*tr_Q)**0.5*self.gh_roots+mean_pred
-#         loss = torch.relu(binary_input)-y*binary_input+torch.log1p(binary_input.abs().exp())
-#         log_loss = (loss*self.gh_weights).sum(1).sum()
-#         return log_loss/X.shape[0],D
-#
-#     def mean_pred(self,X):
-#         with torch.no_grad():
-#             return self.m_q(X)._sigmoid()
 
 class GVI_multi_classification(torch.nn.Module):
     def __init__(self,m_q,m_p,k_list,r_list,Z,reg=1e-3,sigma=1.0,eps=0.01,num_classes=10):
@@ -393,7 +369,10 @@ class GVI_multi_classification(torch.nn.Module):
         V_hat_mu,trace_Q= self.calculate_V()
         V_hat_batch = torch.stack(V_hat_mu,dim=0)
         one=rk_hat_batch@self.U#rk_hatself.U
-        res = torch.linalg.solve(V_hat_batch+self.eye*self.reg,one) #misbehaving inverse,essentially the R matrix is having trouble staying invertible...
+        chol = torch.cholesky(V_hat_batch+self.eye*self.reg)
+        res = torch.cholesky_solve(one,chol) #misbehaving inverse,essentially the R matrix is having trouble staying invertible...
+
+        # res = torch.linalg.solve(V_hat_batch+self.eye*self.reg,one) #misbehaving inverse,essentially the R matrix is having trouble staying invertible...
         print(res.sum())
 
         res = one.permute(0,2,1)@res * self.M/(X.shape[0])**2
