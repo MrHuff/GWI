@@ -5,11 +5,11 @@ import os
 
 if __name__ == '__main__':
 
-    fold = 'first_run_reg'
+    fold = 'first_run_class'
     jobs = os.listdir(fold)
     jobs.sort()
     print(jobs)
-    for i in [-1]:
+    for i in [0,1,2,3,4]:
         job = jobs[i]
         job_params = load_obj(job,folder=f'{fold}/')
         h_space = job_params['h_space']

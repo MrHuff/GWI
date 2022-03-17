@@ -20,7 +20,7 @@ VI_params={
     'reg':1e-2,
     'r':50,
     'y_var': 10.0,
-    'APQ': False
+    'APQ': True
 
 }
 h_space={

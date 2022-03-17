@@ -164,6 +164,7 @@ class experiment_regression_object():
     def dump_model(self,hyperit):
         model_copy = dill.dumps(self.vi_obj)
         torch.save(model_copy, self.save_path+f'best_model_{hyperit}.pt')
+
     def __call__(self,parameters_in):
         self.dataloader = get_regression_dataloader(dataset=self.train_params['dataset'],fold=self.train_params['fold'],bs=parameters_in['bs'])
         self.n,self.d = self.dataloader.dataset.train_X.shape
@@ -250,8 +251,8 @@ class experiment_regression_object():
             y = y.to(self.device)
             obs_size+=y.shape[0]
             with torch.no_grad():
-                log_loss, D = self.vi_obj.get_loss(y, X)
-            losses+=log_loss.item()
+                NLL = self.vi_obj.calc_NLL(y, X)
+            losses+=NLL.item()
         validation_loss_log_likelihood = losses/obs_size
         print(f'held out {mode} nll: ',validation_loss_log_likelihood)
         return validation_loss_log_likelihood
@@ -275,26 +276,26 @@ class experiment_regression_object():
             opt.step()
 
     def fit(self):
-        try:
-            best=np.inf
-            counter=0
-            for i in range(self.train_params['epochs']):
-                self.train_loop(self.opt)
-                validation_loss=self.validation_loop('val')
-                if validation_loss<best:
-                    best=validation_loss
-                    self.dump_model(self.global_hyperit)
-                else:
-                    counter+=1
-                    if counter>self.train_params['patience']:
-                        break
-
+        # try:
+        best=np.inf
+        counter=0
+        for i in range(self.train_params['epochs']):
+            self.train_loop(self.opt)
             validation_loss=self.validation_loop('val')
-            test_loss = self.validation_loop('test')
-            return validation_loss,test_loss
-        except Exception as e:
-            torch.cuda.empty_cache()
-            return 9999999,999999
+            if validation_loss<best:
+                best=validation_loss
+                self.dump_model(self.global_hyperit)
+            else:
+                counter+=1
+                if counter>self.train_params['patience']:
+                    break
+
+        validation_loss=self.validation_loop('val')
+        test_loss = self.validation_loop('test')
+        return validation_loss,test_loss
+        # except Exception as e:
+        #     torch.cuda.empty_cache()
+        #     return 9999999,999999
 
     def run(self):
         if os.path.exists(self.save_path + 'hyperopt_database.p'):
@@ -452,13 +453,13 @@ class experiment_classification_object():
             X = X.float().to(self.device)
             y = y.to(self.device)
             with torch.no_grad():
-                log_loss, D = self.vi_obj.get_loss(y, X)
+                NLL = self.vi_obj.calc_NLL(y, X)
                 softmax_output=self.predict_mean(X)
                 max_scores, max_idx_class = softmax_output.max(
                     dim=1)  # [B, n_classes] -> [B], # get values & indices with the max vals in the dim with scores for each class/label
                 acc.append((max_idx_class==y).squeeze())
 
-            nll+=log_loss.item()
+            nll+=NLL.item()
             n+=y.shape[0]
         nll=nll/n
         acc=torch.cat(acc,dim=0).sum()/n
