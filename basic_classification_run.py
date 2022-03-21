@@ -16,14 +16,13 @@ nn_params = {
     'output_dim': 1,
 }
 VI_params={
-    'm':100,
-    'q_kernel':'r_param',
+    'q_kernel':'r_param_scaling',
     'p_kernel':'rbf',
-    'sigma':1.0,
     'm_p':0.0,
     'reg':1e-2,
-    'r':50,
-    'y_var': 10.0,
+    'APQ':True,
+    'parametrize_Z': True
+
 }
 
 
@@ -53,7 +52,7 @@ h_space={
     'sigma':[1e-4],
     'transformation':[torch.relu],
     'depth_fc':[1],
-    'm':[50]
+    'm':[250]
 }
 if __name__ == '__main__':
 

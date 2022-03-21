@@ -45,7 +45,6 @@ class general_custom_dataset_regression(Dataset):
 class UCIDatasets():
     def __init__(self,  name,  data_path="", n_splits = 10):
         self.datasets = {
-            "housing": "https://archive.ics.uci.edu/ml/machine-learning-databases/housing/housing.data",
             "concrete": "https://archive.ics.uci.edu/ml/machine-learning-databases/concrete/compressive/Concrete_Data.xls",
             "energy": "http://archive.ics.uci.edu/ml/machine-learning-databases/00242/ENB2012_data.xlsx",
             "power": "https://archive.ics.uci.edu/ml/machine-learning-databases/00294/CCPP.zip",
@@ -53,7 +52,9 @@ class UCIDatasets():
             "yacht": "http://archive.ics.uci.edu/ml/machine-learning-databases/00243/yacht_hydrodynamics.data",
             'boston': "https://archive.ics.uci.edu/ml/machine-learning-databases/housing/housing.data",
             'naval':"https://archive.ics.uci.edu/ml/machine-learning-databases/00316/UCI%20CBM%20Dataset.zip",
-            'KIN8NM':"https://www.openml.org/data/get_csv/3626/dataset_2175_kin8nm.csv"
+            'KIN8NM':"https://www.openml.org/data/get_csv/3626/dataset_2175_kin8nm.csv",
+            'protein':"https://archive.ics.uci.edu/ml/machine-learning-databases/00265/CASP.csv"
+
         }
         self.data_path = data_path
         self.name = name
@@ -73,7 +74,7 @@ class UCIDatasets():
                 self.datasets[self.name], self.data_path + "UCI/" + file_name)
         data = None
 
-        if self.name == "housing":
+        if self.name == "boston":
             data = pd.read_csv(self.data_path + 'UCI/housing.data',
                                header=0, delimiter="\s+").values
             self.data = data[np.random.permutation(np.arange(len(data)))]
@@ -91,14 +92,23 @@ class UCIDatasets():
             data = pd.read_excel(self.data_path + 'UCI/CCPP/CCPP/Folds5x2_pp.xlsx', header=0).values
             np.random.shuffle(data)
             self.data = data
-        elif self.name == "wine":
-            data = pd.read_csv(self.data_path + 'UCI/winequality-red.csv',
-                               header=1, delimiter=';').values
+        elif self.name == "protein":
+            data = pd.read_csv(self.data_path + 'UCI/CASP.csv',
+                               header=0, delimiter=',').iloc[:, ::-1]
+            data = data.values
             self.data = data[np.random.permutation(np.arange(len(data)))]
 
+        elif self.name == "wine":
+            data = pd.read_csv(self.data_path + 'UCI/winequality-red.csv',
+                               header=0, delimiter=';')
+            data = data.values
+
+            self.data = data[np.random.permutation(np.arange(len(data)))]
         elif self.name == "yacht":
             data = pd.read_csv(self.data_path + 'UCI/yacht_hydrodynamics.data',
-                               header=1, delimiter='\s+').values
+                               header=1, delimiter='\s+')
+            data = data.values
+
             self.data = data[np.random.permutation(np.arange(len(data)))]
 
         elif self.name == "naval":
@@ -110,7 +120,8 @@ class UCIDatasets():
 
         elif self.name == "KIN8NM":
             data = pd.read_csv(self.data_path + 'UCI/dataset_2175_kin8nm.csv',
-                               header=1).values
+                               header=0)
+            data = data.values
             self.data = data[np.random.permutation(np.arange(len(data)))]
         self.data = self.data.astype('float')
         kf = KFold(n_splits=self.n_splits)

@@ -13,32 +13,30 @@ nn_params = {
     'output_dim': 1,
 }
 VI_params={
-    'q_kernel':'r_param',
+    'q_kernel':'r_param_scaling',
     'p_kernel':'rbf',
-    'sigma':1e-4,
-    'm_p':1.0,
+    'm_p':0.0,
     'reg':1e-2,
     'r':50,
-    'y_var': 10.0,
-    'APQ': True
-
+    'APQ': True,
+    'parametrize_Z':True
 }
 h_space={
     'depth_x':[2],
     'width_x':[10],
-    'bs':[1000],
+    'bs':[500],
     'lr':[1e-2],
     'm_P':[0.0,0.5],
-    'sigma':[1e-4],
+    'sigma':[1e-5],
     'transformation':[torch.tanh],
-    'm':[100]
+    'm':[250]
 }
 
 training_params = {
 
-                   'patience': 10,
+                   'patience': 1000,
                    'device': 'cuda:0',
-                   'epochs':100,
+                   'epochs':1000,
                    'lr':1e-2,
                    'model_name':'GWI',
                    'savedir':'regression_test_2',
@@ -47,7 +45,7 @@ training_params = {
                     'm_q_choice':'mlp'
                    }
 if __name__ == '__main__':
-    # ['housing', 'concrete', 'energy', 'power', 'wine', 'yacht', 'naval', 'KIN8NM']
+    # ['california', 'concrete', 'energy', 'power', 'wine', 'yacht', 'naval', 'KIN8NM','protein']
     dataset="KIN8NM"
     fold=0
     training_params['fold']=fold
