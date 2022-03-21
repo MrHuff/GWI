@@ -64,7 +64,7 @@ class mvp_experiment_object():
         nn_params['d_in_x']=self.X.shape[1]
         self.m_q = feature_map(**nn_params).to(self.device)
         self.m_p = self.VI_params['m_p']
-
+        self.VI_params['m'] = int(round(self.n**0.5))
         if self.n>self.VI_params['m']:
             z_mask=torch.randperm(self.n)[:self.VI_params['m']]
             self.Z =  self.X[z_mask, :]
@@ -145,7 +145,7 @@ class experiment_regression_object():
         self.train_params=train_params
         self.VI_params = VI_params
         self.device = device
-        self.hyperopt_params = ['transformation', 'depth_x', 'width_x', 'bs', 'lr','m_P','sigma','m']
+        self.hyperopt_params = ['transformation', 'depth_x', 'width_x', 'bs', 'lr','m_P','sigma']
         self.get_hyperparameterspace(hyper_param_space)
         self.generate_save_path()
         self.global_hyperit=0
@@ -173,6 +173,7 @@ class experiment_regression_object():
         self.n,self.d = self.dataloader.dataset.train_X.shape
         self.X=self.dataloader.dataset.train_X
         self.Y=self.dataloader.dataset.train_y
+        parameters_in['m'] = int(round(self.X.shape[0]**0.5))
         mean_y_train = self.Y.mean().item()
         nn_params = {
             'd_in_x' : self.d,
@@ -209,12 +210,14 @@ class experiment_regression_object():
                         ).to(self.device)
         self.opt=torch.optim.Adam(self.vi_obj.parameters(),lr=parameters_in['lr'])
 
-        val_loss,test_loss=self.fit()
+        val_loss,test_loss,valr2,testr2=self.fit()
         self.global_hyperit+=1
         return  {
                 'loss': val_loss,
                 'status': STATUS_OK,
                 'test_loss': test_loss,
+                'val_r2':valr2,
+                'test_r2':testr2,
                  'net_params':nn_params
                 }
 
@@ -269,7 +272,7 @@ class experiment_regression_object():
         validation_loss_log_likelihood = losses/obs_size
         print(f'held out {mode} nll: ',validation_loss_log_likelihood)
         print(f'held out {mode} R^2: ',r2)
-        return validation_loss_log_likelihood
+        return validation_loss_log_likelihood,r2
 
     def train_loop(self,opt):
         self.vi_obj.train()
@@ -280,20 +283,20 @@ class experiment_regression_object():
             X=X.to(self.device)
             y=y.to(self.device)
 
-            with autograd.detect_anomaly():
-                log_loss,D=self.vi_obj.get_loss(y,X)
-                pbar.set_description(f"D: {D.item()} log_loss: {log_loss.item() }")
-                tot_loss = D + log_loss
-                opt.zero_grad()
-                tot_loss.backward()
-                opt.step()
+            # with autograd.detect_anomaly():
+            log_loss,D=self.vi_obj.get_loss(y,X)
+            pbar.set_description(f"D: {D.item()} log_loss: {log_loss.item() }")
+            tot_loss = D + log_loss
+            opt.zero_grad()
+            tot_loss.backward()
+            opt.step()
 
     def fit(self):
         best=np.inf
         counter=0
         for i in range(self.train_params['epochs']):
             self.train_loop(self.opt)
-            validation_loss=self.validation_loop('val')
+            validation_loss,r2=self.validation_loop('val')
             if validation_loss<best:
                 best=validation_loss
                 self.dump_model(self.global_hyperit)
@@ -302,9 +305,9 @@ class experiment_regression_object():
                 if counter>self.train_params['patience']:
                     break
         self.load_model(self.global_hyperit)
-        validation_loss=self.validation_loop('val')
-        test_loss = self.validation_loop('test')
-        return validation_loss,test_loss
+        validation_loss,valr2=self.validation_loop('val')
+        test_loss,testr2 = self.validation_loop('test')
+        return validation_loss,test_loss,valr2,testr2
     def clean_L_grads(self):
         self.vi_obj.r.L.grad=torch.nan_to_num(self.vi_obj.r.L.grad,nan=-1e-2)
 
@@ -337,7 +340,7 @@ class experiment_classification_object():
         self.train_params=train_params
         self.VI_params = VI_params
         self.device = device
-        self.hyperopt_params = ['depth_x', 'width_x','depth_fc', 'bs', 'lr','m_P','sigma','transformation','m']
+        self.hyperopt_params = ['depth_x', 'width_x','depth_fc', 'bs', 'lr','m_P','sigma','transformation']
         self.get_hyperparameterspace(hyper_param_space)
         self.generate_save_path()
         self.log_upper_bound = np.log(self.train_params['output_classes'])
@@ -372,6 +375,7 @@ class experiment_classification_object():
             y_list.append(y)
         self.X=torch.cat(x_list,dim=0)
         self.n= self.X.shape[0]
+        parameters_in['m'] = int(round(self.X.shape[0]**0.5))
         self.Y=torch.cat(y_list,dim=0).unsqueeze(-1)
 
         if self.n>parameters_in['m']:
@@ -527,18 +531,18 @@ class experiment_classification_object():
         self.vi_obj.train()
         pbar= tqdm.tqdm(self.dataloader_train)
         for i,(X,y) in enumerate(pbar):
-            with autograd.detect_anomaly():
+            # with autograd.detect_anomaly():
 
-                X=X.float().to(self.device)
-                y=y.to(self.device)
+            X=X.float().to(self.device)
+            y=y.to(self.device)
 
-                log_loss,D=self.vi_obj.get_loss(y,X)
-                pbar.set_description(f"D: {D.item()} log_loss: {log_loss.item() }")
+            log_loss,D=self.vi_obj.get_loss(y,X)
+            pbar.set_description(f"D: {D.item()} log_loss: {log_loss.item() }")
 
-                tot_loss = D + log_loss
-                opt.zero_grad()
-                tot_loss.backward()
-                opt.step()
+            tot_loss = D + log_loss
+            opt.zero_grad()
+            tot_loss.backward()
+            opt.step()
 
     def clean_L_grads(self):
         for r in self.vi_obj.r:
@@ -547,27 +551,27 @@ class experiment_classification_object():
     def fit(self):
         best=0.0
         counter=0
-        # try:
-        for i in range(self.train_params['epochs']):
-            self.train_loop(self.opt)
+        try:
+            for i in range(self.train_params['epochs']):
+                self.train_loop(self.opt)
+                val_acc,val_nll=self.validation_loop('val')
+                print(self.k.outputscale,self.k.base_kernel.lengthscale)
+                if val_acc>best:
+                    best=val_acc
+                    print('woho new best model!')
+                    self.dump_model(self.global_hyperit)
+                else:
+                    counter+=1
+                    if counter>self.train_params['patience']:
+                        break
+            test_ood_auc = self.OOD_AUC('test')
+            val_ood_auc = self.OOD_AUC('val')
             val_acc,val_nll=self.validation_loop('val')
-            print(self.k.outputscale,self.k.base_kernel.lengthscale)
-            if val_acc>best:
-                best=val_acc
-                print('woho new best model!')
-                self.dump_model(self.global_hyperit)
-            else:
-                counter+=1
-                if counter>self.train_params['patience']:
-                    break
-        test_ood_auc = self.OOD_AUC('test')
-        val_ood_auc = self.OOD_AUC('val')
-        val_acc,val_nll=self.validation_loop('val')
-        test_acc,test_nll=self.validation_loop('test')
-        return val_acc,val_nll,val_ood_auc,test_acc,test_nll,test_ood_auc
-        # except Exception as e:
-        #     torch.cuda.empty_cache()
-        #     return -99999,-99999,-99999,-99999,-99999,-99999
+            test_acc,test_nll=self.validation_loop('test')
+            return val_acc,val_nll,val_ood_auc,test_acc,test_nll,test_ood_auc
+        except Exception as e:
+            torch.cuda.empty_cache()
+            return -99999,-99999,-99999,-99999,-99999,-99999
 
     def dump_model(self,hyperit):
         model_copy = dill.dumps(self.vi_obj)

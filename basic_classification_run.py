@@ -21,7 +21,7 @@ VI_params={
     'm_p':0.0,
     'reg':1e-2,
     'APQ':True,
-    'parametrize_Z': True
+    'parametrize_Z': False
 
 }
 
@@ -38,21 +38,20 @@ training_params = {
                     'val_factor':0.05,
                     'output_classes':10,
                     'image_size':32,
-                    'cdim':3,
-                    'dataset':'CIFAR10',
+                    'cdim':1,
+                    'dataset':'FashionMNIST',
                     'm_q_choice':'CNN' #CNN,kernel_sum
                    }
 
 h_space={
     'depth_x':[3],
     'width_x':[8,16,32],
-    'bs':[500],
+    'bs':[1000],
     'lr':[1e-2],
     'm_P':[0.0],
     'sigma':[1e-4],
     'transformation':[torch.relu],
     'depth_fc':[1],
-    'm':[250]
 }
 if __name__ == '__main__':
 

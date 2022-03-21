@@ -29,14 +29,13 @@ h_space={
     'm_P':[0.0,0.5],
     'sigma':[1e-5],
     'transformation':[torch.tanh],
-    'm':[250]
 }
 
 training_params = {
 
-                   'patience': 1000,
+                   'patience': 50,
                    'device': 'cuda:0',
-                   'epochs':1000,
+                   'epochs':100,
                    'lr':1e-2,
                    'model_name':'GWI',
                    'savedir':'regression_test_2',
@@ -45,9 +44,9 @@ training_params = {
                     'm_q_choice':'mlp'
                    }
 if __name__ == '__main__':
-    # ['california', 'concrete', 'energy', 'power', 'wine', 'yacht', 'naval', 'KIN8NM','protein']
-    dataset="KIN8NM"
-    fold=0
+    # ['boston', 'concrete', 'energy','KIN8NM', 'power','protein' ,'wine', 'yacht', 'naval']
+    dataset="naval"
+    fold=1
     training_params['fold']=fold
     training_params['dataset']=dataset
 

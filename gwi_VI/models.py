@@ -4,7 +4,6 @@ from gpytorch.kernels import RBFKernel
 from scipy.special import roots_hermite
 import numpy as np
 from torch.distributions.normal import Normal
-import geotorch
 
 CDF_APPROX_COEFF=1.65451
 sqrt_pi=np.pi**0.5

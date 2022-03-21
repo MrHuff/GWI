@@ -15,15 +15,15 @@ nn_params = {
     'output_dim': 1,
 }
 VI_params={
-    'm':20,
-    'q_kernel':'r_param',
+    'q_kernel':'r_param_scaling',
     'p_kernel':'rbf',
     'sigma':1e-4,
     'm_p':0.0,
-    'reg':1e-2,
+    'reg':1e-3,
     'r':50,
     'y_var': 10.0,
-    'APQ':False
+    'APQ':True,
+    'parametrize_Z':True
 }
 
 training_params = {'bs': 900,
@@ -90,7 +90,7 @@ def sim_run(index,method):
         X,y=sim_sin_curve_2()
     elif index==3:
         X,y = sim_sin_curve_3(noise=0.25)
-    X_tr, X_val, y_tr, y_val=remove_random_chunks(X,y,chunks_to_remove=14,total_chunks=20)
+    X_tr, X_val, y_tr, y_val=remove_random_chunks(X,y,chunks_to_remove=5,total_chunks=20)
     # method = 'GWI'
     print(y_tr.std().item())
     VI_params['y_var'] = y_tr.std().item()
@@ -120,8 +120,6 @@ def sim_run(index,method):
 
 if __name__ == '__main__':
     torch.random.manual_seed(np.random.randint(0,100000))
-
-    index = 1
 
     for i in [1,2,3]:
         sim_run(i,'GWI')
