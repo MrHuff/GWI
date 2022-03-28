@@ -5,7 +5,7 @@ def load_obj(name,folder):
     with open(f'{folder}' + name, 'rb') as f:
         return pickle.load(f)
 EPOCHS=500
-PARAM=False
+PARAM=True
 
 def generate_classification_jobs(job_name):
     if not os.path.exists(job_name):
@@ -17,7 +17,7 @@ def generate_classification_jobs(job_name):
         'sigma': 1.0,
         'reg': 1e-2,
         'y_var': 10.0,
-        'APQ': False,
+        'APQ': True,
     'parametrize_Z':PARAM
 
     }
@@ -102,5 +102,5 @@ def generate_regression_jobs(job_name):
 
 
 if __name__ == '__main__':
-    generate_classification_jobs('fix_z_class')
-    generate_regression_jobs('fix_z_reg')
+    generate_classification_jobs('learned_z_class')
+    generate_regression_jobs('learned_z_reg')

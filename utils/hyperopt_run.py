@@ -10,8 +10,8 @@ from hyperopt import hp,tpe,Trials,fmin,space_eval,STATUS_OK,STATUS_FAIL,rand
 import pickle
 from utils.classification_dataloaders import *
 import dill
-import torch.autograd as autograd
-
+import scipy
+from sklearn.metrics import roc_auc_score
 def cuda_r2(y_pred,y):
     res = (y_pred-y)**2
     return (1. - res.mean()/y.var()).item()
@@ -105,40 +105,52 @@ class mvp_experiment_object():
             k = r_param_cholesky_scaling(k=self.k, Z=self.Z, X=self.X_hat, sigma=self.k.outputscale.item()).to(
                 self.device)
             k.init_L()
-            # k.requires_grad_(True)
+            k.requires_grad_(True)
         # if is_q:
         #
         # else:
         return k
 
-    def train_loop(self,opt,tr_m=True):
+    def train_loop(self,opt):
         self.dataloader.dataset.set('train')
+        self.vi_obj.train()
+        D_list = []
         for i,(X,x_cat,y) in enumerate(tqdm.tqdm(self.dataloader)):
-            if not isinstance(x_cat,list):
-                x_cat=x_cat.to(self.device)
             X=X.to(self.device)
             y=y.to(self.device)
             log_loss,D=self.vi_obj.get_loss(y,X)
             print('D: ',D.item())
             print('log_loss: ',log_loss.item())
-                # print(self.r.lengthscale)
             tot_loss = D + log_loss
             opt.zero_grad()
             tot_loss.backward()
             opt.step()
+            D_list.append(D.item())
+        return min(D_list)
 
-    def fit(self):
+    def fit(self,X=None):
         opt=torch.optim.Adam(self.vi_obj.parameters(),lr=self.train_params['lr'])
+        self.preds=[self.predict_mean(X).cpu().numpy()]
+        self.vars=[self.predict_uncertainty(X).cpu().numpy()]
+        self.d_vals =[]
+        self.mat_list = []
         for i in range(self.train_params['epochs']):
-            self.train_loop(opt,True)
-
-        print(self.vi_obj.r.scale)
+            d_min=self.train_loop(opt)
+            self.d_vals.append(d_min)
+            sigma=self.vi_obj.r.get_sigma_debug()
+            print(sigma)
+            self.mat_list.append(sigma.cpu().numpy())
+            if X is not None:
+                self.preds.append(self.predict_mean(X).cpu().numpy())
+                self.vars.append(self.predict_uncertainty(X).cpu().numpy())
 
     def predict_mean(self,x_test):
-        return self.vi_obj.mean_pred(x_test)
+        self.vi_obj.eval()
+        return self.vi_obj.mean_pred(x_test).squeeze()
 
     def predict_uncertainty(self, x_test):
-        return self.vi_obj.posterior_variance(x_test)
+        self.vi_obj.eval()
+        return self.vi_obj.posterior_variance(x_test).squeeze()
 
 class experiment_regression_object():
     def __init__(self,hyper_param_space,VI_params,train_params,device='cuda:0'):
@@ -295,6 +307,10 @@ class experiment_regression_object():
         best=np.inf
         counter=0
         for i in range(self.train_params['epochs']):
+
+            # if i > some_number:
+            #     self.vi_obj.r.requires_grad=False
+
             self.train_loop(self.opt)
             validation_loss,r2=self.validation_loop('val')
             if validation_loss<best:
@@ -421,7 +437,7 @@ class experiment_classification_object():
         self.opt=torch.optim.Adam(self.vi_obj.parameters(),lr=parameters_in['lr'])
         val_acc,val_nll,val_ood_auc,test_acc,test_nll,test_ood_auc=self.fit()
         self.global_hyperit+=1
-        return {'loss': val_acc,
+        return {'loss': -val_acc,
                 'val_acc':val_acc,
                 'val_nll':val_nll,
                 'val_ood_auc':val_ood_auc,
@@ -487,9 +503,19 @@ class experiment_classification_object():
         print(f'held out {mode} nll: ',nll)
         return acc.item(),nll
 
-    def get_auc(self,entropy,true_labels,threshold):
-        classification = (entropy.unsqueeze(-1)<=threshold)==true_labels.unsqueeze(-1)
-        AUC = torch.mean(classification.float()).item()
+    def get_auc(self,in_sample_preds,in_sample_labels,out_sample_preds,out_sample_labels,threshold):
+        #Fucked up the calculation... redo
+        in_sample_preds= in_sample_preds/self.log_upper_bound
+        out_sample_preds=out_sample_preds/self.log_upper_bound
+        preds=torch.cat([in_sample_preds,out_sample_preds],dim=0).cpu().numpy()
+        truths=torch.cat([in_sample_labels,out_sample_labels],dim=0).cpu().numpy()
+        AUC=roc_auc_score(truths,preds)
+        # classification_in_sample = (in_sample_preds.unsqueeze(-1)<=threshold)==in_sample_labels.unsqueeze(-1) #horizontal axis are different cut-offs
+        # y_axis = classification_in_sample.float().mean(0).cpu().numpy()
+        # classification_out_sample = (out_sample_preds.unsqueeze(-1)<=threshold)==out_sample_labels.unsqueeze(-1) #horizontal axis are different cut-offs
+        # x_axis = (1.- classification_out_sample.float().mean(0)).cpu().numpy()
+
+        # AUC = torch.mean(classification.float()).item()
         print('AUC OOD: ', AUC)
         return AUC
 
@@ -508,9 +534,10 @@ class experiment_classification_object():
             with torch.no_grad():
                 p=self.predict_mean(X)
                 e = torch.sum(- p * torch.log(p),dim=1)
+                e = torch.nan_to_num(e,nan=0.0)
                 entropies_in_sample.append(e)
         entropies_in_sample = torch.cat(entropies_in_sample,dim=0)
-        true_labels.append(torch.ones_like(entropies_in_sample))
+        true_labels_in_sample = torch.zeros_like(entropies_in_sample)
 
         entropies_out_sample=[]
         for i, (X, y) in enumerate(tqdm.tqdm(self.OOB_loader)):
@@ -519,12 +546,12 @@ class experiment_classification_object():
             with torch.no_grad():
                 p=self.predict_mean(X)
                 e = torch.sum(- p * torch.log(p),dim=1)
+                e = torch.nan_to_num(e,nan=0.0)
                 entropies_out_sample.append(e)
         entropies_out_sample = torch.cat(entropies_out_sample, dim=0)
-        true_labels.append(torch.zeros_like(entropies_out_sample))
-        all_entropies = torch.cat([entropies_in_sample,entropies_out_sample],dim=0)
-        true_labels = torch.cat(true_labels,dim=0)
-        auc=self.get_auc(all_entropies,true_labels,self.auc_interval)
+        true_labels_out_sample=torch.ones_like(entropies_out_sample)
+        # in_sample_preds, in_sample_labels, out_sample_preds, out_sample_labels, threshold
+        auc=self.get_auc(entropies_in_sample,true_labels_in_sample,entropies_out_sample,true_labels_out_sample,self.auc_interval)
         return auc
 
     def train_loop(self,opt):
@@ -551,27 +578,30 @@ class experiment_classification_object():
     def fit(self):
         best=0.0
         counter=0
-        try:
-            for i in range(self.train_params['epochs']):
-                self.train_loop(self.opt)
-                val_acc,val_nll=self.validation_loop('val')
-                print(self.k.outputscale,self.k.base_kernel.lengthscale)
-                if val_acc>best:
-                    best=val_acc
-                    print('woho new best model!')
-                    self.dump_model(self.global_hyperit)
-                else:
-                    counter+=1
-                    if counter>self.train_params['patience']:
-                        break
-            test_ood_auc = self.OOD_AUC('test')
-            val_ood_auc = self.OOD_AUC('val')
+        # try:
+        for i in range(self.train_params['epochs']):
+            # if i > some_number:
+            #     self.vi_obj.r.requires_grad=False
+            self.train_loop(self.opt)
             val_acc,val_nll=self.validation_loop('val')
-            test_acc,test_nll=self.validation_loop('test')
-            return val_acc,val_nll,val_ood_auc,test_acc,test_nll,test_ood_auc
-        except Exception as e:
-            torch.cuda.empty_cache()
-            return -99999,-99999,-99999,-99999,-99999,-99999
+            # val_ood_auc = self.OOD_AUC('val')
+            print(self.k.outputscale,self.k.base_kernel.lengthscale)
+            if val_acc>best:
+                best=val_acc
+                print('woho new best model!')
+                self.dump_model(self.global_hyperit)
+            else:
+                counter+=1
+                if counter>self.train_params['patience']:
+                    break
+        test_ood_auc = self.OOD_AUC('test')
+        val_ood_auc = self.OOD_AUC('val')
+        val_acc,val_nll=self.validation_loop('val')
+        test_acc,test_nll=self.validation_loop('test')
+        return val_acc,val_nll,val_ood_auc,test_acc,test_nll,test_ood_auc
+        # except Exception as e:
+        #     torch.cuda.empty_cache()
+        #     return -99999,-99999,-99999,-99999,-99999,-99999
 
     def dump_model(self,hyperit):
         model_copy = dill.dumps(self.vi_obj)

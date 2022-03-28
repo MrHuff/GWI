@@ -65,14 +65,14 @@ class r_param_cholesky_scaling(torch.nn.Module):
             L = torch.linalg.cholesky(torch.inverse(self.kzz+kx@kx.t()/self.sigma+self.eye))
 
         if not self.parametrize_Z:
-            self.kzz_inv = torch.inverse(self.kzz)
+            self.kzz_inv = torch.inverse(self.kzz+self.eye*self.reg)
         self.L = torch.nn.Parameter(L)
         # geotorch.
 
     #L getting fucked up.
     def forward(self,x1,x2=None):
         L = torch.tril(self.L)+self.eye*self.reg
-        L=ensure_pos_diag(L)
+        L=torch.sigmoid(ensure_pos_diag(L))
         Z= self.Z
         if x2 is None:
             kzx = self.k(Z, x1).evaluate()
@@ -107,9 +107,19 @@ class r_param_cholesky_scaling(torch.nn.Module):
                 sol =self.kzz_inv @ kzx_2
             return  (self.k(x1,x2).evaluate()- kzx_1.t()@sol +  t_ @ t/self.sigma)
 
+    def get_sigma_debug(self):
+        with torch.no_grad():
+            L = torch.tril(self.L)+self.eye*self.reg
+            # L=ensure_pos_diag(L)
+            L = torch.sigmoid(ensure_pos_diag(L))
+
+            return L@L.t()
+
     def rk(self,X):
         L = torch.tril(self.L)+self.eye*self.reg
-        L=ensure_pos_diag(L)
+        # L=ensure_pos_diag(L)
+        L=torch.sigmoid(ensure_pos_diag(L))
+
         Z= self.Z
         kzx = self.k(Z, X).evaluate()
         mid= L.t()@kzx
@@ -164,8 +174,8 @@ class GWI(torch.nn.Module):
 
     def posterior_variance(self,X):
         with torch.no_grad():
-            posterior = self.r(X)
-        return torch.diag(posterior)**0.5
+            posterior = self.r(X.unsqueeze(1)).squeeze()
+        return posterior**0.5
 
     def likelihood_reg(self,y,X):
         pred = self.m_q(X)

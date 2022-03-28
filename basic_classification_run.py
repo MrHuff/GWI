@@ -30,7 +30,7 @@ training_params = {
                     'model_name':'GWI',
                    'patience': 10,
                    'device': 'cuda:0',
-                   'epochs':500,
+                   'epochs':10,
                     'fold':0,
                     'seed':1,
                     'savedir':'CIFAR_TEST',

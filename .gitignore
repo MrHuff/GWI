@@ -10,6 +10,7 @@ __pycache__/
 local_UCI_storageUCI
 # C extensions
 data
+*.gif
 *.so
 *gz
 # Distribution / packaging
