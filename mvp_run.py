@@ -29,7 +29,7 @@ VI_params={
 training_params = {'bs': 900,
                    'patience': 10,
                    'device': 'cuda:0',
-                   'epochs':500,
+                   'epochs':10,
                    'lr':1e-2
                    }
 
@@ -122,7 +122,7 @@ if __name__ == '__main__':
     torch.random.manual_seed(np.random.randint(0,100000))
 
     for i in [1,2,3]:
-        sim_run(i,'GWI')
+        sim_run(i,'SVGP')
 
     #FIGURE OUT SCALING ISSUE
 

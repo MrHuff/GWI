@@ -27,13 +27,13 @@ VI_params={
     'r':50,
     'y_var': 10.0,
     'APQ':True,
-    'parametrize_Z':False
+    'parametrize_Z':True
 }
 
 training_params = {'bs': 900,
-                   'patience': 10,
+                   'patience': 1000,
                    'device': 'cuda:0',
-                   'epochs':500,
+                   'epochs':1000,
                    'lr':1e-2
                    }
 
@@ -92,12 +92,13 @@ def plot_stuff_2(sigma,d_val,method,index,dir,epoch):
     plt.clf()
     return fname
 
-def plot_stuff(X,X_tr,y_tr,X_val,y_val,y_hat,l,u,method,index,dir,epoch):
+def plot_stuff(X_inducing,Y_inducing,X,X_tr,y_tr,X_val,y_val,y_hat,l,u,method,index,dir,epoch):
     if not os.path.exists(dir):
         os.makedirs(dir)
 
-    sns.scatterplot(X_tr.squeeze(),y_tr.squeeze())
-    sns.scatterplot(X_val.squeeze(),y_val.squeeze(),color='r')
+    sns.scatterplot(X_tr.squeeze(),y_tr.squeeze(),alpha=0.5)
+    sns.scatterplot(X_inducing.squeeze(),Y_inducing.squeeze(),color='y')
+    sns.scatterplot(X_val.squeeze(),y_val.squeeze(),color='r',alpha=0.5)
     ax=sns.lineplot(X.squeeze(),y_hat)
     ax.fill_between(X.squeeze(),l,u, color='b', alpha=.5)
     fname=f'{dir}/{method}_{index}_{epoch}.png'
@@ -116,7 +117,6 @@ def sim_run(index,method):
     p_z=VI_params['parametrize_Z']
     dir_name = f'gwi_gif_{index}_param_z={p_z}'
     dir_name_2 = f'heatmap_gwi_gif_{index}_param_z={p_z}'
-
     if index==1:
         X,y=sim_sin_curve()
     elif index==2:
@@ -130,9 +130,11 @@ def sim_run(index,method):
     e=mvp_experiment_object(X=X_tr, Y=y_tr, nn_params=nn_params, VI_params=VI_params, train_params=training_params)
     e.fit(X.cuda())
     filenames=[]
+    x_inducing=e.Z.cpu().numpy()
+    y_inducing=e.Y_Z.cpu().numpy()
     for i,(a,b) in enumerate(zip(e.preds,e.vars)):
         l,u=get_u_l(a,b)
-        fname=plot_stuff(X=X,X_tr=X_tr,y_tr=y_tr,X_val=X_val,y_val=y_val,y_hat=a,l=l,u=u,method=method,index=index,dir=dir_name,epoch=i)
+        fname=plot_stuff(X_inducing=x_inducing,Y_inducing=y_inducing,X=X,X_tr=X_tr,y_tr=y_tr,X_val=X_val,y_val=y_val,y_hat=a,l=l,u=u,method=method,index=index,dir=dir_name,epoch=i)
         filenames.append(fname)
     generate_gif(filenames,dir_name,f'line_plot_{index}')
     filenames=[]
@@ -141,11 +143,9 @@ def sim_run(index,method):
         filenames.append(fname)
     generate_gif(filenames,dir_name_2,f'heatmap_{index}')
 
-
 if __name__ == '__main__':
     torch.random.manual_seed(np.random.randint(0,100000))
-
-    for i in [1]:
+    for i in [1,2,3]:
         sim_run(i,'GWI')
 
     #FIGURE OUT SCALING ISSUE

@@ -24,8 +24,8 @@ VI_params={
 h_space={
     'depth_x':[2],
     'width_x':[10],
-    'bs':[500],
-    'lr':[1e-2],
+    'bs':[250],
+    'lr':[1e-3],
     'm_P':[0.0,0.5],
     'sigma':[1e-5],
     'transformation':[torch.tanh],
@@ -33,9 +33,9 @@ h_space={
 
 training_params = {
 
-                   'patience': 50,
+                   'patience': 100,
                    'device': 'cuda:0',
-                   'epochs':100,
+                   'epochs':500,
                    'lr':1e-2,
                    'model_name':'GWI',
                    'savedir':'regression_test_2',
@@ -45,7 +45,7 @@ training_params = {
                    }
 if __name__ == '__main__':
     # ['boston', 'concrete', 'energy','KIN8NM', 'power','protein' ,'wine', 'yacht', 'naval']
-    dataset="naval"
+    dataset="KIN8NM"
     fold=1
     training_params['fold']=fold
     training_params['dataset']=dataset

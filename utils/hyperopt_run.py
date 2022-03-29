@@ -70,7 +70,6 @@ class mvp_experiment_object():
             self.Z =  self.X[z_mask, :]
             self.Y_Z= self.Y[z_mask,:]
             self.X_hat =  self.X[torch.randperm(self.n)[:self.VI_params['m']], :]
-
         else:
             self.Z=self.X
         self.k=self.get_kernels(self.VI_params['p_kernel'],False)
@@ -102,23 +101,42 @@ class mvp_experiment_object():
 
             k.requires_grad_(False)
         elif string == 'r_param_scaling':
-            k = r_param_cholesky_scaling(k=self.k, Z=self.Z, X=self.X_hat, sigma=self.k.outputscale.item()).to(
+            k = r_param_cholesky_scaling(k=self.k, Z=self.Z, X=self.X_hat, sigma=self.k.outputscale.item(),parametrize_Z=self.VI_params['parametrize_Z']).to(
                 self.device)
             k.init_L()
-            k.requires_grad_(True)
+            # k.requires_grad_(True)
         # if is_q:
         #
         # else:
         return k
 
+    def train_loop_m_q(self,opt):
+        self.dataloader.dataset.set('train')
+        self.vi_obj.train()
+        loss = torch.nn.MSELoss()
+        for i,(X,x_cat,y) in enumerate(tqdm.tqdm(self.dataloader)):
+            X=X.to(self.device)
+            y=y.to(self.device)
+            y_pred=self.vi_obj.mean_forward(X)
+            tot_loss = loss(y_pred,y)
+            print(tot_loss.item())
+            opt.zero_grad()
+            tot_loss.backward()
+            opt.step()
+
+
+
     def train_loop(self,opt):
         self.dataloader.dataset.set('train')
         self.vi_obj.train()
+        self.m_q.requires_grad_(False)
         D_list = []
         for i,(X,x_cat,y) in enumerate(tqdm.tqdm(self.dataloader)):
             X=X.to(self.device)
             y=y.to(self.device)
-            log_loss,D=self.vi_obj.get_loss(y,X)
+            z_mask=torch.randperm(self.n)[:self.VI_params['m']]
+            Z_prime = self.X[z_mask, :].to(self.device)
+            log_loss,D=self.vi_obj.get_loss(y,X,Z_prime)
             print('D: ',D.item())
             print('log_loss: ',log_loss.item())
             tot_loss = D + log_loss
@@ -134,11 +152,13 @@ class mvp_experiment_object():
         self.vars=[self.predict_uncertainty(X).cpu().numpy()]
         self.d_vals =[]
         self.mat_list = []
+        for i in range(2*self.train_params['epochs']):
+            self.train_loop_m_q(opt)
         for i in range(self.train_params['epochs']):
             d_min=self.train_loop(opt)
             self.d_vals.append(d_min)
             sigma=self.vi_obj.r.get_sigma_debug()
-            print(sigma)
+            # print(sigma)
             self.mat_list.append(sigma.cpu().numpy())
             if X is not None:
                 self.preds.append(self.predict_mean(X).cpu().numpy())
@@ -185,7 +205,8 @@ class experiment_regression_object():
         self.n,self.d = self.dataloader.dataset.train_X.shape
         self.X=self.dataloader.dataset.train_X
         self.Y=self.dataloader.dataset.train_y
-        parameters_in['m'] = int(round(self.X.shape[0]**0.5))
+        self.m=int(round(self.X.shape[0]**0.5))*10
+        parameters_in['m'] = self.m
         mean_y_train = self.Y.mean().item()
         nn_params = {
             'd_in_x' : self.d,
@@ -194,13 +215,6 @@ class experiment_regression_object():
             'transformation':parameters_in['transformation'],
             'layers_x': [parameters_in['width_x']]*parameters_in['depth_x'],
         }
-        if self.train_params['m_q_choice']=='kernel_sum':
-            nn_params['k'] = self.k
-            nn_params['Z'] = self.Z
-            self.m_q = kernel_feature_map_regression(**nn_params).to(self.device)
-        elif self.train_params['m_q_choice']=='mlp':
-            self.m_q = feature_map(**nn_params).to(self.device)
-
         if self.n>parameters_in['m']:
             z_mask=torch.randperm(self.n)[:parameters_in['m']]
             self.Z =  self.X[z_mask, :]
@@ -208,6 +222,12 @@ class experiment_regression_object():
             self.X_hat =  self.X[torch.randperm(self.n)[:parameters_in['m']], :]
         else:
             self.Z=self.X
+        if self.train_params['m_q_choice']=='kernel_sum':
+            nn_params['k'] = self.k
+            nn_params['Z'] = self.Z
+            self.m_q = kernel_feature_map_regression(**nn_params).to(self.device)
+        elif self.train_params['m_q_choice']=='mlp':
+            self.m_q = feature_map(**nn_params).to(self.device)
         self.k=self.get_kernels(self.VI_params['p_kernel'],parameters_in)
         self.r=self.get_kernels(self.VI_params['q_kernel'],parameters_in)
         self.vi_obj=GWI(
@@ -290,20 +310,46 @@ class experiment_regression_object():
         self.vi_obj.train()
         self.dataloader.dataset.set('train')
         pbar= tqdm.tqdm(self.dataloader)
-
+        self.m_q.requires_grad_(False)
         for i,(X,x_cat,y) in enumerate(pbar):
             X=X.to(self.device)
             y=y.to(self.device)
-
-            # with autograd.detect_anomaly():
-            log_loss,D=self.vi_obj.get_loss(y,X)
+            z_mask=torch.randperm(self.n)[:self.m]
+            Z_prime = self.X[z_mask, :].to(self.device)
+            log_loss,D=self.vi_obj.get_loss(y,X,Z_prime)
             pbar.set_description(f"D: {D.item()} log_loss: {log_loss.item() }")
             tot_loss = D + log_loss
             opt.zero_grad()
             tot_loss.backward()
             opt.step()
-
+    def train_loop_m_q(self,opt):
+        self.dataloader.dataset.set('train')
+        self.vi_obj.train()
+        loss = torch.nn.MSELoss()
+        pbar= tqdm.tqdm(self.dataloader)
+        for i,(X,x_cat,y) in enumerate(pbar):
+            X=X.to(self.device)
+            y=y.to(self.device)
+            y_pred=self.vi_obj.mean_forward(X)
+            tot_loss = loss(y_pred,y)
+            pbar.set_description(f"MSE loss: {tot_loss.item()}")
+            opt.zero_grad()
+            tot_loss.backward()
+            opt.step()
     def fit(self):
+        best=-np.inf
+        counter=0
+        for i in range(self.train_params['epochs']):
+            self.train_loop_m_q(self.opt)
+            validation_loss,r2=self.validation_loop('val')
+            if r2>best:
+                best=r2
+                self.dump_model(self.global_hyperit)
+            else:
+                counter+=1
+                if counter>self.train_params['patience']:
+                    break
+        self.load_model(self.global_hyperit)
         best=np.inf
         counter=0
         for i in range(self.train_params['epochs']):
@@ -391,7 +437,8 @@ class experiment_classification_object():
             y_list.append(y)
         self.X=torch.cat(x_list,dim=0)
         self.n= self.X.shape[0]
-        parameters_in['m'] = int(round(self.X.shape[0]**0.5))
+        self.m=int(round(self.X.shape[0]**0.5))
+        parameters_in['m'] = self.m
         self.Y=torch.cat(y_list,dim=0).unsqueeze(-1)
 
         if self.n>parameters_in['m']:
@@ -414,7 +461,6 @@ class experiment_classification_object():
             'image_size':self.train_params['image_size'],
             'transform': parameters_in['transformation'],
             'channels_fc':[parameters_in['width_x']]*parameters_in['depth_fc']
-
         }
         if self.train_params['m_q_choice']=='kernel_sum':
             nn_params['k'] = self.k
@@ -422,8 +468,6 @@ class experiment_classification_object():
             self.m_q = conv_net_classifier_kernel(**nn_params).to(self.device)
         elif self.train_params['m_q_choice']=='CNN':
             self.m_q = conv_net_classifier(**nn_params).to(self.device)
-
-
         self.vi_obj=GVI_multi_classification(
                         N=self.n,
                         m_q=self.m_q,
@@ -559,13 +603,13 @@ class experiment_classification_object():
         pbar= tqdm.tqdm(self.dataloader_train)
         for i,(X,y) in enumerate(pbar):
             # with autograd.detect_anomaly():
-
             X=X.float().to(self.device)
             y=y.to(self.device)
-
-            log_loss,D=self.vi_obj.get_loss(y,X)
+            z_mask=torch.randperm(self.n)[:self.m]
+            Z_prime = self.X[z_mask, :].to(self.device)
+            log_loss,D=self.vi_obj.get_loss(y,X,Z_prime)
+            # log_loss,D=self.vi_obj.get_loss(y,X)
             pbar.set_description(f"D: {D.item()} log_loss: {log_loss.item() }")
-
             tot_loss = D + log_loss
             opt.zero_grad()
             tot_loss.backward()

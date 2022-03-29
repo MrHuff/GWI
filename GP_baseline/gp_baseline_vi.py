@@ -28,7 +28,8 @@ class gp_svi_baseline(torch.nn.Module):
         self.train_params=train_params
         self.likelihood = gpytorch.likelihoods.GaussianLikelihood()
         self.n,self.d = train_x.shape
-        inducing_points = train_x[torch.randperm(self.n)[:VI_params['m']],:]
+        m=int(round(self.n**0.5))
+        inducing_points = train_x[torch.randperm(self.n)[:m],:]
         self.model = GPModel(inducing_points)
         dataset = general_custom_dataset(train_x,train_y)
         dataset.set('train')

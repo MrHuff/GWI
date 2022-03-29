@@ -12,7 +12,7 @@ log2pi=np.log(np.pi*2)
 def ensure_pos_diag(L):
     v=torch.diag(L)
     # print(torch.diag(L))
-    v = torch.clamp(v,min=1e-3)
+    v = torch.clamp(v,min=1e-6)
     mask = torch.diag(torch.ones_like(v))
     L = mask * torch.diag(v) + (1. - mask) * L
     return L
@@ -72,11 +72,12 @@ class r_param_cholesky_scaling(torch.nn.Module):
     #L getting fucked up.
     def forward(self,x1,x2=None):
         L = torch.tril(self.L)+self.eye*self.reg
-        L=torch.sigmoid(ensure_pos_diag(L))
+        L = ensure_pos_diag(L)
+        # L=torch.sigmoid(ensure_pos_diag(L))
         Z= self.Z
         if x2 is None:
             kzx = self.k(Z, x1).evaluate()
-            t= L.t() @ kzx
+            t= L.t() @ kzx #L\cdot k(Z,X)
 
             if self.parametrize_Z:
                 kzz = self.k(Z).evaluate()
@@ -84,16 +85,16 @@ class r_param_cholesky_scaling(torch.nn.Module):
                 sol = torch.cholesky_solve(kzx,chol_z)
             else:
                 sol =self.kzz_inv @ kzx
-            if len(t.shape)==3:
+            if len(t.shape)==3: #t=[L^T k(Z,X_i),L^T k(Z,X_{i+1}),]
                 T_mat = t.permute(0,2,1) @ t
                 out = self.k(x1).evaluate()- kzx.permute(0,2,1)@sol + T_mat/self.sigma
                 # return out.clamp(min=1e-3)
-                return out
+                return self.scale.exp()*out
             else:
                 T_mat = t.t() @ t
                 out =(self.k(x1).evaluate()- kzx.t()@sol + T_mat/self.sigma)
                 # out=ensure_pos_diag(out)
-                return out
+                return self.scale.exp()*out
         else:
             kzx_1 = self.k(Z, x1).evaluate()
             kzx_2 = self.k(Z, x2).evaluate()
@@ -105,29 +106,29 @@ class r_param_cholesky_scaling(torch.nn.Module):
                 sol = torch.cholesky_solve(kzx_2, chol_z)
             else:
                 sol =self.kzz_inv @ kzx_2
-            return  (self.k(x1,x2).evaluate()- kzx_1.t()@sol +  t_ @ t/self.sigma)
+            return  self.scale.exp()*(self.k(x1,x2).evaluate()- kzx_1.t()@sol + t_ @ t/self.sigma)
 
     def get_sigma_debug(self):
         with torch.no_grad():
             L = torch.tril(self.L)+self.eye*self.reg
-            # L=ensure_pos_diag(L)
-            L = torch.sigmoid(ensure_pos_diag(L))
+            L=ensure_pos_diag(L)
+            # L = torch.sigmoid(ensure_pos_diag(L))
 
             return L@L.t()
 
-    def rk(self,X):
-        L = torch.tril(self.L)+self.eye*self.reg
-        # L=ensure_pos_diag(L)
-        L=torch.sigmoid(ensure_pos_diag(L))
-
-        Z= self.Z
-        kzx = self.k(Z, X).evaluate()
-        mid= L.t()@kzx
-        if self.parametrize_Z:
-            kzz = self.k(Z).evaluate()
-            return (kzz@L@mid@kzx.t())
-        else:
-            return (self.kzz@L@mid@kzx.t())
+    # def rk(self,X):
+    #     L = torch.tril(self.L)+self.eye*self.reg
+    #     L=ensure_pos_diag(L)
+    #     # L=torch.sigmoid(ensure_pos_diag(L))
+    #
+    #     Z= self.Z
+    #     kzx = self.k(Z, X).evaluate()
+    #     mid= L.t()@kzx
+    #     if self.parametrize_Z:
+    #         kzz = self.k(Z).evaluate()
+    #         return (kzz@L@mid@kzx.t())
+    #     else:
+    #         return (self.kzz@L@mid@kzx.t())
 
 def get_hermite_weights(n):
     roots,weights = roots_hermite(n,False)
@@ -154,9 +155,9 @@ class GWI(torch.nn.Module):
     def get_MPQ(self,batch_X=None):
         raise NotImplementedError
 
-    def get_APQ(self,batch_X=None):
+    def get_APQ(self,batch_X,Z_prime):
         X=batch_X
-        rk_hat=self.r.rk(X)/X.shape[0]
+        rk_hat= 1/X.shape[0] * self.r(Z_prime,X)@self.k(X,Z_prime).evaluate()  #self.r.rk(X)/
         eigs = torch.linalg.eigvals(rk_hat + self.big_eye)
         eigs = eigs.abs()
         eigs = eigs-self.big_eye.diag()
@@ -165,8 +166,8 @@ class GWI(torch.nn.Module):
         # self.calculate_V()
         return res
 
-    def calc_hard_tr_term(self,X=None):
-        mpq= self.get_APQ(X)
+    def calc_hard_tr_term(self,X,Z_prime):
+        mpq= self.get_APQ(X,Z_prime)
         p_trace = self.k(X.unsqueeze(1)).evaluate().mean()
         q_trace = self.r(X.unsqueeze(1)).mean()
         mat = p_trace + q_trace -2*mpq#"*eig.diag().sum()
@@ -190,8 +191,8 @@ class GWI(torch.nn.Module):
         rXX=self.r(X.unsqueeze(1)).squeeze(1)+self.sigma
         return 0.5*(torch.log(rXX)+vec/rXX + log2pi).sum()
 
-    def get_loss(self,y,X):
-        tot_trace,hard_trace,tr_Q,tr_P=self.calc_hard_tr_term(X)
+    def get_loss(self,y,X,Z_prime):
+        tot_trace,hard_trace,tr_Q,tr_P=self.calc_hard_tr_term(X,Z_prime)
         # print('MPQ: ', hard_trace)
         # print('Tr Q: ', tr_Q)
         # print('Tr P: ', tr_P)
@@ -199,7 +200,8 @@ class GWI(torch.nn.Module):
         D = torch.relu((tot_trace + reg))**0.5
         log_loss = self.N*tr_Q / (2. * self.sigma) + ll
         return log_loss/X.shape[0],D
-
+    def mean_forward(self,X):
+        return self.m_q(X)
     def mean_pred(self,X):
         with torch.no_grad():
             return self.m_q(X)
@@ -230,11 +232,11 @@ class GVI_multi_classification(torch.nn.Module):
         self.num_classes = num_classes
         self.APQ = APQ
 
-    def get_APQ(self,batch_X):
+    def get_APQ(self,batch_X,Z_prime_flat):
         X=batch_X
         total_eig = 0.0
         for r in self.r:
-            rk_hat = r.rk(X)/X.shape[0]
+            rk_hat = 1 / X.shape[0] * r(Z_prime_flat, X) @ self.k(X, Z_prime_flat).evaluate()  # self.r.rk(X)/
             eigs = torch.linalg.eigvals(rk_hat + self.big_eye)
             eigs = eigs.abs()
             eigs = eigs - self.big_eye.diag()
@@ -247,8 +249,8 @@ class GVI_multi_classification(torch.nn.Module):
     def get_MPQ(self,batch_X):
         raise NotImplementedError
 
-    def calc_hard_tr_term(self,X):
-        hard_trace=self.get_APQ(X)
+    def calc_hard_tr_term(self,X,Z_prime_flat):
+        hard_trace=self.get_APQ(X,Z_prime_flat)
         sq_trq_mat=[]
         total_r_trace = 0.0
         x_flattened = X.flatten(1).unsqueeze(1)
@@ -268,8 +270,9 @@ class GVI_multi_classification(torch.nn.Module):
         reg = torch.sum((h-tmp)**2)
         return h,reg
 
-    def get_loss(self,y,X):
-        tot_trace,hard_trace,tr_P,tr_Q,sq_trq_mat = self.calc_hard_tr_term(X.flatten(1))
+    def get_loss(self,y,X,Z_prime):
+        Z_prime_flat = Z_prime.flatten(1)
+        tot_trace,hard_trace,tr_P,tr_Q,sq_trq_mat = self.calc_hard_tr_term(X.flatten(1),Z_prime_flat)
         mean_pred,reg = self.likelihood_reg(y,X)
         trq_j = 2**0.5  * torch.gather(sq_trq_mat,1,y.unsqueeze(-1))  * self.gh_roots +torch.gather(mean_pred,1,y.unsqueeze(-1))
         cdf_term= (trq_j.unsqueeze(1)-mean_pred.unsqueeze(-1))/sq_trq_mat.unsqueeze(-1)
