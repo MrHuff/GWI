@@ -6,6 +6,8 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from GP_baseline.gp_baseline_exact import *
 from GP_baseline.gp_baseline_vi import *
+import shutil
+
 sns.set()
 #TODO: upgrade m_Q wtf haha
 nn_params = {
@@ -21,7 +23,7 @@ VI_params={
     'm_p':0.0,
     'reg':1e-2,
     'APQ':True,
-    'parametrize_Z': False
+    'parametrize_Z': True
 
 }
 
@@ -30,7 +32,7 @@ training_params = {
                     'model_name':'GWI',
                    'patience': 10,
                    'device': 'cuda:0',
-                   'epochs':10,
+                   'epochs':100,
                     'fold':0,
                     'seed':1,
                     'savedir':'CIFAR_TEST',
@@ -38,8 +40,8 @@ training_params = {
                     'val_factor':0.05,
                     'output_classes':10,
                     'image_size':32,
-                    'cdim':1,
-                    'dataset':'FashionMNIST',
+                    'cdim':3,
+                    'dataset':'CIFAR10',
                     'm_q_choice':'CNN' #CNN,kernel_sum
                    }
 
@@ -54,7 +56,8 @@ h_space={
     'depth_fc':[1],
 }
 if __name__ == '__main__':
-
+    if os.path.exists('CIFAR_TEST'):
+        shutil.rmtree('CIFAR_TEST')
     torch.random.manual_seed(np.random.randint(0,100000))
     e=experiment_classification_object(hyper_param_space=h_space, VI_params=VI_params, train_params=training_params)
     e.run()

@@ -77,7 +77,7 @@ def generate_regression_jobs(job_name):
         'bs': [100,250,500,1000],
         'lr': [1e-2,1e-3],
         'm_P': [0.0, 0.5,1.0],
-        'sigma': [1e-3,1e-2,1e-4],
+        'sigma': [1e-3,1e-2,1e-4,1e-5],
         'transformation': [torch.tanh,torch.relu],
     }
     training_params = {
@@ -88,7 +88,7 @@ def generate_regression_jobs(job_name):
         'savedir': f'{job_name}_results',
         'seed': 0,
         'fold':0,
-        'hyperits': 20,
+        'hyperits': 30,
         'regression':True,
         'm_q_choice': 'mlp'
     }

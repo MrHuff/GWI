@@ -33,7 +33,7 @@ VI_params={
 training_params = {'bs': 900,
                    'patience': 1000,
                    'device': 'cuda:0',
-                   'epochs':1000,
+                   'epochs':2000,
                    'lr':1e-2
                    }
 
@@ -133,14 +133,16 @@ def sim_run(index,method):
     x_inducing=e.Z.cpu().numpy()
     y_inducing=e.Y_Z.cpu().numpy()
     for i,(a,b) in enumerate(zip(e.preds,e.vars)):
-        l,u=get_u_l(a,b)
-        fname=plot_stuff(X_inducing=x_inducing,Y_inducing=y_inducing,X=X,X_tr=X_tr,y_tr=y_tr,X_val=X_val,y_val=y_val,y_hat=a,l=l,u=u,method=method,index=index,dir=dir_name,epoch=i)
-        filenames.append(fname)
+        if i%10==0:
+            l,u=get_u_l(a,b)
+            fname=plot_stuff(X_inducing=x_inducing,Y_inducing=y_inducing,X=X,X_tr=X_tr,y_tr=y_tr,X_val=X_val,y_val=y_val,y_hat=a,l=l,u=u,method=method,index=index,dir=dir_name,epoch=i)
+            filenames.append(fname)
     generate_gif(filenames,dir_name,f'line_plot_{index}')
     filenames=[]
     for i,(a,b) in enumerate(zip(e.d_vals,e.mat_list)):
-        fname = plot_stuff_2(b,a,method,index,dir_name_2,i)
-        filenames.append(fname)
+        if i%10==0:
+            fname = plot_stuff_2(b,a,method,index,dir_name_2,i)
+            filenames.append(fname)
     generate_gif(filenames,dir_name_2,f'heatmap_{index}')
 
 if __name__ == '__main__':

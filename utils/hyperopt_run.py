@@ -15,6 +15,9 @@ from sklearn.metrics import roc_auc_score
 def cuda_r2(y_pred,y):
     res = (y_pred-y)**2
     return (1. - res.mean()/y.var()).item()
+def cuda_rmse(y_pred,y):
+    res = (y_pred-y)**2
+    return (torch.mean(res)**0.5).item()
 
 def covar_dist(x1,x2):
     adjustment = x1.mean(-2, keepdim=True)
@@ -82,7 +85,8 @@ class mvp_experiment_object():
                         k=self.k,
                         sigma=self.VI_params['sigma'],
                         reg=self.VI_params['reg'],
-                        APQ=self.VI_params['APQ']
+                        APQ=self.VI_params['APQ'],
+                        empirical_sigma=1.0
                         ).to(self.device)
         dataset=general_custom_dataset(X,Y,nn_params['cat_size_list'])
         self.dataloader=custom_dataloader(dataset,train_params['bs'])
@@ -123,8 +127,6 @@ class mvp_experiment_object():
             opt.zero_grad()
             tot_loss.backward()
             opt.step()
-
-
 
     def train_loop(self,opt):
         self.dataloader.dataset.set('train')
@@ -201,11 +203,12 @@ class experiment_regression_object():
         self.vi_obj=dill.loads(model_copy)
 
     def __call__(self,parameters_in):
-        self.dataloader = get_regression_dataloader(dataset=self.train_params['dataset'],fold=self.train_params['fold'],bs=parameters_in['bs'])
+        self.dataloader,self.ds = get_regression_dataloader(dataset=self.train_params['dataset'],fold=self.train_params['fold'],bs=parameters_in['bs'])
         self.n,self.d = self.dataloader.dataset.train_X.shape
         self.X=self.dataloader.dataset.train_X
         self.Y=self.dataloader.dataset.train_y
-        self.m=int(round(self.X.shape[0]**0.5))*10
+        print(self.X.shape)
+        self.m=int(round(self.X.shape[0]**0.5))
         parameters_in['m'] = self.m
         mean_y_train = self.Y.mean().item()
         nn_params = {
@@ -238,9 +241,12 @@ class experiment_regression_object():
                         k=self.k,
                         sigma=parameters_in['sigma'],
                         reg=self.VI_params['reg'],
-                        APQ=self.VI_params['APQ']
-                        ).to(self.device)
-        self.opt=torch.optim.Adam(self.vi_obj.parameters(),lr=parameters_in['lr'])
+                        APQ=self.VI_params['APQ'],
+                    empirical_sigma=self.ds.empirical_sigma
+
+        ).to(self.device)
+        self.lr = parameters_in['lr']
+
 
         val_loss,test_loss,valr2,testr2=self.fit()
         self.global_hyperit+=1
@@ -301,16 +307,18 @@ class experiment_regression_object():
         Y = torch.cat(y_list)
         Y_pred = torch.cat(y_pred_list)
         r2 = cuda_r2(Y_pred,Y)
+        rmse = cuda_rmse(Y_pred,Y)
         validation_loss_log_likelihood = losses/obs_size
         print(f'held out {mode} nll: ',validation_loss_log_likelihood)
         print(f'held out {mode} R^2: ',r2)
+        print(f'held out {mode} rmse: ',rmse)
         return validation_loss_log_likelihood,r2
 
     def train_loop(self,opt):
         self.vi_obj.train()
         self.dataloader.dataset.set('train')
         pbar= tqdm.tqdm(self.dataloader)
-        self.m_q.requires_grad_(False)
+        self.vi_obj.m_q.requires_grad_(False)
         for i,(X,x_cat,y) in enumerate(pbar):
             X=X.to(self.device)
             y=y.to(self.device)
@@ -322,6 +330,7 @@ class experiment_regression_object():
             opt.zero_grad()
             tot_loss.backward()
             opt.step()
+
     def train_loop_m_q(self,opt):
         self.dataloader.dataset.set('train')
         self.vi_obj.train()
@@ -339,6 +348,7 @@ class experiment_regression_object():
     def fit(self):
         best=-np.inf
         counter=0
+        self.opt = torch.optim.Adam(self.vi_obj.parameters(), lr=self.lr)
         for i in range(self.train_params['epochs']):
             self.train_loop_m_q(self.opt)
             validation_loss,r2=self.validation_loop('val')
@@ -350,6 +360,7 @@ class experiment_regression_object():
                 if counter>self.train_params['patience']:
                     break
         self.load_model(self.global_hyperit)
+        self.opt = torch.optim.Adam(self.vi_obj.parameters(), lr=self.lr)
         best=np.inf
         counter=0
         for i in range(self.train_params['epochs']):
@@ -370,8 +381,6 @@ class experiment_regression_object():
         validation_loss,valr2=self.validation_loop('val')
         test_loss,testr2 = self.validation_loop('test')
         return validation_loss,test_loss,valr2,testr2
-    def clean_L_grads(self):
-        self.vi_obj.r.L.grad=torch.nan_to_num(self.vi_obj.r.L.grad,nan=-1e-2)
 
 
     def run(self):
@@ -478,7 +487,7 @@ class experiment_classification_object():
                         reg=self.VI_params['reg'],
                         APQ=self.VI_params['APQ']
                         ).to(self.device)
-        self.opt=torch.optim.Adam(self.vi_obj.parameters(),lr=parameters_in['lr'])
+        self.lr = parameters_in['lr']
         val_acc,val_nll,val_ood_auc,test_acc,test_nll,test_ood_auc=self.fit()
         self.global_hyperit+=1
         return {'loss': -val_acc,
@@ -600,6 +609,7 @@ class experiment_classification_object():
 
     def train_loop(self,opt):
         self.vi_obj.train()
+        self.vi_obj.m_q.requires_grad_(False)
         pbar= tqdm.tqdm(self.dataloader_train)
         for i,(X,y) in enumerate(pbar):
             # with autograd.detect_anomaly():
@@ -615,29 +625,57 @@ class experiment_classification_object():
             tot_loss.backward()
             opt.step()
 
-    def clean_L_grads(self):
-        for r in self.vi_obj.r:
-            r.L.grad=torch.nan_to_num(r.L.grad,nan=0.0)
+    def train_loop_acc(self,opt):
+        self.vi_obj.train()
+        pbar= tqdm.tqdm(self.dataloader_train)
+        loss = nn.CrossEntropyLoss()
+        for i,(X,y) in enumerate(pbar):
+            X=X.float().to(self.device)
+            y=y.to(self.device)
+            y_hat=self.vi_obj.mean_forward(X)
+            # log_loss,D=self.vi_obj.get_loss(y,X)
+            tot_loss = loss(y_hat,y)
+
+            pbar.set_description(f"CE loss: {tot_loss.item()}")
+            opt.zero_grad()
+            tot_loss.backward()
+            opt.step()
 
     def fit(self):
         best=0.0
         counter=0
-        # try:
+
+        self.opt=torch.optim.Adam(self.vi_obj.parameters(),lr=self.lr)
         for i in range(self.train_params['epochs']):
-            # if i > some_number:
-            #     self.vi_obj.r.requires_grad=False
+            self.train_loop_acc(self.opt)
+            val_acc, val_nll = self.validation_loop('val')
+            print(self.k.outputscale, self.k.base_kernel.lengthscale)
+            if val_acc > best:
+                best = val_acc
+                print('woho new best model!')
+                self.dump_model(self.global_hyperit)
+            else:
+                counter += 1
+                if counter > self.train_params['patience']:
+                    break
+        best=np.inf
+        counter=0
+        self.load_model(self.global_hyperit)
+        self.opt=torch.optim.Adam(self.vi_obj.parameters(),lr=self.lr)
+        for i in range(self.train_params['epochs']):
             self.train_loop(self.opt)
             val_acc,val_nll=self.validation_loop('val')
-            # val_ood_auc = self.OOD_AUC('val')
             print(self.k.outputscale,self.k.base_kernel.lengthscale)
-            if val_acc>best:
-                best=val_acc
+            if val_nll<best:
+                best=val_nll
                 print('woho new best model!')
                 self.dump_model(self.global_hyperit)
             else:
                 counter+=1
                 if counter>self.train_params['patience']:
                     break
+
+        self.load_model(self.global_hyperit)
         test_ood_auc = self.OOD_AUC('test')
         val_ood_auc = self.OOD_AUC('val')
         val_acc,val_nll=self.validation_loop('val')
@@ -651,6 +689,9 @@ class experiment_classification_object():
         model_copy = dill.dumps(self.vi_obj)
         torch.save(model_copy, self.save_path+f'best_model_{hyperit}.pt')
 
+    def load_model(self,hyperit):
+        model_copy=torch.load(self.save_path+f'best_model_{hyperit}.pt')
+        self.vi_obj=dill.loads(model_copy)
     def run(self):
         if os.path.exists(self.save_path + 'hyperopt_database.p'):
             return

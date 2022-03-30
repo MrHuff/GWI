@@ -1,13 +1,16 @@
+import os.path
+
 from utils.hyperopt_run import *
 from simulate_data.unit_test_data import *
 import seaborn as sns
 import matplotlib.pyplot as plt
 from GP_baseline.gp_baseline_exact import *
 from GP_baseline.gp_baseline_vi import *
+import shutil
 sns.set()
 #TODO: upgrade m_Q wtf haha
 nn_params = {
-    'layers_x': [8,8],
+    'layers_x': [10,10],
     'cat_size_list': [],
     'transformation': torch.tanh,
     'output_dim': 1,
@@ -24,9 +27,9 @@ VI_params={
 h_space={
     'depth_x':[2],
     'width_x':[10],
-    'bs':[250],
-    'lr':[1e-3],
-    'm_P':[0.0,0.5],
+    'bs':[500],
+    'lr':[1e-2],
+    'm_P':[0,0.5,1.0],
     'sigma':[1e-5],
     'transformation':[torch.tanh],
 }
@@ -44,8 +47,11 @@ training_params = {
                     'm_q_choice':'mlp'
                    }
 if __name__ == '__main__':
+    if os.path.exists('regression_test_2'):
+        shutil.rmtree('regression_test_2')
+
     # ['boston', 'concrete', 'energy','KIN8NM', 'power','protein' ,'wine', 'yacht', 'naval']
-    dataset="KIN8NM"
+    dataset="naval"
     fold=1
     training_params['fold']=fold
     training_params['dataset']=dataset

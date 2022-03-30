@@ -137,7 +137,7 @@ def get_hermite_weights(n):
 #TODO: FIX SCALING ISSUES
 
 class GWI(torch.nn.Module):
-    def __init__(self,N,m_q,m_p,k,r,reg=1e-3,sigma=1.0,APQ=False):
+    def __init__(self,N,m_q,m_p,k,r,reg=1e-3,sigma=1.0,APQ=False,empirical_sigma=1.0):
         super(GWI, self).__init__()
         self.r = r
         self.m_q = m_q
@@ -151,7 +151,8 @@ class GWI(torch.nn.Module):
         self.U_calculated = False
         self.N=N
         self.APQ = APQ
-
+        self.log_empirical_sigma = np.log(empirical_sigma)
+        self.const = (0.5*log2pi +self.log_empirical_sigma).item()
     def get_MPQ(self,batch_X=None):
         raise NotImplementedError
 
@@ -189,7 +190,7 @@ class GWI(torch.nn.Module):
         pred = self.m_q(X)
         vec=(y-pred)**2
         rXX=self.r(X.unsqueeze(1)).squeeze(1)+self.sigma
-        return 0.5*(torch.log(rXX)+vec/rXX + log2pi).sum()
+        return (0.5*torch.log(rXX)+0.5*vec/rXX + self.const).sum()
 
     def get_loss(self,y,X,Z_prime):
         tot_trace,hard_trace,tr_Q,tr_P=self.calc_hard_tr_term(X,Z_prime)
@@ -282,6 +283,18 @@ class GVI_multi_classification(torch.nn.Module):
         D = torch.relu(tot_trace+ reg) ** 0.5
         return L.sum(),D
 
+    def mean_forward(self,X):
+        m_q = self.m_q(X)
+        sq_trq_mat = []
+        x_flattened = X.flatten(1).unsqueeze(1)
+        for r in self.r:
+            sq_trq_mat.append(r(x_flattened).squeeze())
+        sq_trq_mat = torch.stack(sq_trq_mat, dim=1)
+        trq_j = 2 ** 0.5 * sq_trq_mat.unsqueeze(-1) * self.gh_roots + m_q.unsqueeze(-1)
+        cdf_term = (trq_j.unsqueeze(1) - m_q.unsqueeze(-1).unsqueeze(-1)) / sq_trq_mat.unsqueeze(-1).unsqueeze(-1)
+        full = torch.log(self.dist.cdf(cdf_term) + 1e-3).sum(1) - self.const_remove
+        S = torch.sum(full.exp() * self.gh_weights, -1) / sqrt_pi
+        return (1 - self.eps) * S + (self.eps / (self.num_classes - 1)) * (1 - S)
     def mean_pred(self,X):
         with torch.no_grad():
             m_q = self.m_q(X)
