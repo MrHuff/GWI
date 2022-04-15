@@ -130,8 +130,6 @@ class UCIDatasets():
         self.data_splits = kf.split(data)
         self.data_splits = [(idx[0], idx[1]) for idx in self.data_splits]
 
-
-
     def get_split(self, split=-1):
 
         if split == -1:

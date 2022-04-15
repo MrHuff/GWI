@@ -30,9 +30,9 @@ VI_params={
 
 training_params = {
                     'model_name':'GWI',
-                   'patience': 10,
+                   'patience': 1,
                    'device': 'cuda:0',
-                   'epochs':100,
+                   'epochs':1,
                     'fold':0,
                     'seed':1,
                     'savedir':'CIFAR_TEST',
@@ -42,18 +42,20 @@ training_params = {
                     'image_size':32,
                     'cdim':3,
                     'dataset':'CIFAR10',
-                    'm_q_choice':'CNN' #CNN,kernel_sum
-                   }
+                    'm_q_choice':'CNN', #CNN,kernel_sum
+                    'init_its': 100
+}
 
 h_space={
     'depth_x':[3],
     'width_x':[8,16,32],
     'bs':[1000],
     'lr':[1e-2],
-    'm_P':[0.0],
+    'm_P':[0.1],
     'sigma':[1e-4],
     'transformation':[torch.relu],
     'depth_fc':[1],
+    'm_factor':[1.0],
 }
 if __name__ == '__main__':
     if os.path.exists('CIFAR_TEST'):

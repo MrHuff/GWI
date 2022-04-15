@@ -38,7 +38,7 @@ class _Residual_Block(nn.Module):
 class conv_net_classifier(nn.Module):
     def __init__(self, cdim=1, output=10, channels=[64, 128, 256, 512, 512, 512], image_size=32,transform=torch.tanh,channels_fc=[]):
         super(conv_net_classifier, self).__init__()
-
+        torch.manual_seed(42)
         assert (2 ** len(channels)) * 4 == image_size
 
         self.output = output
@@ -108,6 +108,8 @@ class conv_net_classifier_kernel(nn.Module):
 
 
 
+
+
 class multi_input_Sequential(torch.nn.Sequential):
     def forward(self, inputs):
         for module in self._modules.values():
@@ -165,6 +167,7 @@ class feature_map(torch.nn.Module):
                  output_dim=10,
                  ):
         super(feature_map, self).__init__()
+        torch.manual_seed(42)
         self.output_dim=output_dim
         self.init_covariate_net(d_in_x,layers_x,cat_size_list,transformation,output_dim)
 

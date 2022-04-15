@@ -18,10 +18,14 @@ def extract_regression_data(results_folder):
             trials = pickle.load(open(load_data_base_string, "rb"))
             trials = dill.loads(trials)
             best_trial = sorted(trials.results, key=lambda x: x['test_loss'], reverse=False)[0]
-            data_list.append([ds,f,best_trial['loss'],best_trial['test_loss'],best_trial['val_r2'],best_trial['test_r2']])
+            data_list.append(
+                [ds, f, best_trial['loss'], best_trial['test_loss'], best_trial['val_r2'], best_trial['test_r2'],
+                 best_trial['test_rsme'], best_trial['T']])
+            # data_list.append(
+            #     [ds, f, best_trial['loss'], best_trial['test_loss'], best_trial['val_r2'], best_trial['test_r2']])
         except Exception as e:
             print('file missing, job probably did not run properly')
-    all_jobs = pd.DataFrame(data_list,columns=['dataset','fold','val_acc','NLL','val_r2','test_r2'])
+    all_jobs = pd.DataFrame(data_list,columns=['dataset','fold','val_acc','NLL','val_r2','test_r2','rsme','T'])
     all_jobs=all_jobs.sort_values(['dataset','fold'])
     all_jobs.to_csv(f'{results_folder}/all_jobs.csv')
     summary_df_r2 = all_jobs.groupby(['dataset'])['test_r2'].mean()
@@ -45,6 +49,8 @@ def extract_classification_data(results_folder):
             trials = pickle.load(open(load_data_base_string, "rb"))
             trials = dill.loads(trials)
             best_trial = sorted(trials.results, key=lambda x: x['test_acc'], reverse=True)[0]
+            print(best_trial['test_ood_auc'])
+            print(best_trial['test_ood_auc_prior'])
             data_list.append([ds,f,best_trial['val_acc'],best_trial['test_acc'],best_trial['test_nll'],best_trial['test_ood_auc']])
         except Exception as e:
             print('file missing, job probably did not run properly')
@@ -65,5 +71,5 @@ def extract_classification_data(results_folder):
 
 
 if __name__ == '__main__':
-    extract_regression_data('learned_z_reg_results')
-    # extract_classification_data('learned_z_class_results')
+    extract_regression_data('learned_z_reg_5_results')
+    extract_classification_data('learned_z_class_5_results')

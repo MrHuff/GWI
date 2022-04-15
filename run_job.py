@@ -5,13 +5,12 @@ import os
 
 if __name__ == '__main__':
 
-    fold = 'fix_z_reg'
+    fold = 'learned_z_reg_5'
     jobs = os.listdir(fold)
     jobs.sort()
     print(jobs)
     for i in range(len(jobs)):
-        job = jobs[i]
-        job_params = load_obj(job,folder=f'{fold}/')
+        job_params = load_obj(jobs[i],folder=f'{fold}/')
         print(job_params)
         h_space = job_params['h_space']
         VI_params = job_params['VI_params']

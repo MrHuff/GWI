@@ -18,10 +18,10 @@ def ensure_pos_diag(L):
     return L
 
 class ls_init(torch.nn.Module):
-    def __init__(self,k,y,Z,sigma,its=150):
+    def __init__(self,k,y,Z,sigma,its=25):
         super(ls_init, self).__init__()
         self.its = its
-        self.register_buffer('eye',torch.eye(Z.shape[0])*sigma)
+        self.register_buffer('eye',torch.eye(Z.shape[0]))
         self.register_buffer('Z',Z)
         self.register_buffer('Y',y)
 
@@ -35,15 +35,74 @@ class ls_init(torch.nn.Module):
         opt = torch.optim.Adam(self.k.parameters(),lr=1e-1)
         for i in tqdm.tqdm(range(self.its)):
             opt.zero_grad()
-            L=torch.linalg.cholesky(self.k(self.Z).evaluate()+self.eye*10)
+            L=torch.linalg.cholesky(self.k(self.Z).evaluate()+self.eye*1e-2)
             loss= -self.objective(L)
             print(loss)
             loss.backward()
             opt.step()
         return self.k
 
+class r_param_cholesky_simpler(torch.nn.Module):
+    def __init__(self,k,Z,X,sigma,reg=1e-1,scale_init=1.0,parametrize_Z=False):
+        super(r_param_cholesky_simpler, self).__init__()
+        self.k = k
+        self.register_buffer('eye',torch.eye(Z.shape[0]))
+        self.parametrize_Z = parametrize_Z
+        if parametrize_Z:
+            self.Z = torch.nn.Parameter(Z)
+        else:
+            self.register_buffer('Z',Z)
+        self.register_buffer('X',X)
+        self.reg=reg
+        self.sigma=sigma
+        self.fac=1-1e-2
+
+    def init_L(self):
+        with torch.no_grad():
+            kx= self.k(self.Z,self.X).evaluate()
+            self.kzz =self.k(self.Z).evaluate()
+            print(self.kzz)
+            # print('kzz rank: ',torch.linalg.matrix_rank(self.kzz))
+            L = torch.linalg.cholesky(torch.inverse(self.kzz+self.eye*self.reg)-torch.inverse(self.kzz+kx@kx.t()/self.sigma+self.eye*self.reg) + self.eye*self.reg)
+        self.L = torch.nn.Parameter(L)
+        # self.L = torch.nn.Parameter(torch.randn((self.Z.shape[0],50))*0.1)
+
+    def forward(self,x1,x2=None):
+        L = torch.tril(self.L)+self.eye*self.reg
+        L = ensure_pos_diag(L)
+        # L=torch.sigmoid(ensure_pos_diag(L))
+        Z= self.Z
+        if x2 is None:
+            kzx = self.k(Z, x1).evaluate()
+            t= L.t() @ kzx #L\cdot k(Z,X)
+            if len(t.shape)==3: #t=[L^T k(Z,X_i),L^T k(Z,X_{i+1}),]
+                T_mat = t.permute(0,2,1) @ t
+                out = self.k(x1).evaluate() - T_mat.clip(max=self.fac*self.sigma)
+                # print(out)
+                return out
+                #lower bound the scale, interpret as nuancing the prior
+                #Too certain if NLL is shit.
+            else:
+                T_mat = t.t() @ t
+                out =self.k(x1).evaluate() - T_mat.clip(max=self.fac*self.sigma)
+                # print(out)
+
+                return out
+        else:
+            kzx_1 = self.k(Z, x1).evaluate()
+            kzx_2 = self.k(Z, x2).evaluate()
+            t= L.t() @ kzx_2
+            t_ = kzx_1 @ self.L
+            # return torch.clip(self.scale.exp(),1e-6)*(self.k(x1,x2).evaluate()- kzx_1.t()@sol + t_ @ t/self.sigma)
+            # return self.scale.exp()*(self.k(x1,x2).evaluate()- kzx_1.t()@sol + t_ @ t/self.sigma)
+            out=self.k(x1, x2).evaluate() - (t_ @ t).clip(max=self.fac*self.sigma)
+            # return torch.clip(self.scale.exp(), 1e-6) * out
+            # print(out)
+
+            return out
+
 class r_param_cholesky_scaling(torch.nn.Module):
-    def __init__(self,k,Z,X,sigma,reg=1e-3,scale_init=0.0,parametrize_Z=False):
+    def __init__(self,k,Z,X,sigma,reg=1e-1,scale_init=1.0,parametrize_Z=False):
         super(r_param_cholesky_scaling, self).__init__()
         self.k = k
         self.scale = torch.nn.Parameter(torch.ones(1)*scale_init)
@@ -61,11 +120,12 @@ class r_param_cholesky_scaling(torch.nn.Module):
         with torch.no_grad():
             kx= self.k(self.Z,self.X).evaluate()
             self.kzz =self.k(self.Z).evaluate()
-            # print('kzz rank: ',torch.linalg.matrix_rank(self.kzz))
-            L = torch.linalg.cholesky(torch.inverse(self.kzz+kx@kx.t()/self.sigma+self.eye))
+            print(self.kzz)
 
+            # print('kzz rank: ',torch.linalg.matrix_rank(self.kzz))
+            L = torch.inverse(torch.linalg.cholesky(self.kzz+kx@kx.t()/self.sigma+self.eye))
         if not self.parametrize_Z:
-            self.kzz_inv = torch.inverse(self.kzz+self.eye*self.reg)
+            self.kzz_inv = torch.inverse(self.kzz+self.eye)
         self.L = torch.nn.Parameter(L)
         # geotorch.
 
@@ -89,12 +149,21 @@ class r_param_cholesky_scaling(torch.nn.Module):
                 T_mat = t.permute(0,2,1) @ t
                 out = self.k(x1).evaluate()- kzx.permute(0,2,1)@sol + T_mat/self.sigma
                 # return out.clamp(min=1e-3)
-                return self.scale.exp()*out
+                # return torch.clip(self.scale.exp(),1e-6)*out
+                # return self.scale.exp()*out
+                # print(out)
+                return out
+                #lower bound the scale, interpret as nuancing the prior
+                #Too certain if NLL is shit.
+
             else:
                 T_mat = t.t() @ t
                 out =(self.k(x1).evaluate()- kzx.t()@sol + T_mat/self.sigma)
                 # out=ensure_pos_diag(out)
-                return self.scale.exp()*out
+                # return torch.clip(self.scale.exp(),1e-6)*out
+                # return self.scale.exp()*out
+                # print(out)
+                return out
         else:
             kzx_1 = self.k(Z, x1).evaluate()
             kzx_2 = self.k(Z, x2).evaluate()
@@ -106,8 +175,12 @@ class r_param_cholesky_scaling(torch.nn.Module):
                 sol = torch.cholesky_solve(kzx_2, chol_z)
             else:
                 sol =self.kzz_inv @ kzx_2
-            return  self.scale.exp()*(self.k(x1,x2).evaluate()- kzx_1.t()@sol + t_ @ t/self.sigma)
 
+            # return torch.clip(self.scale.exp(),1e-6)*(self.k(x1,x2).evaluate()- kzx_1.t()@sol + t_ @ t/self.sigma)
+            # return self.scale.exp()*(self.k(x1,x2).evaluate()- kzx_1.t()@sol + t_ @ t/self.sigma)
+            out=(self.k(x1, x2).evaluate() - kzx_1.t() @ sol + t_ @ t / self.sigma)
+            # return torch.clip(self.scale.exp(), 1e-6) * out
+            return out
     def get_sigma_debug(self):
         with torch.no_grad():
             L = torch.tril(self.L)+self.eye*self.reg
@@ -116,20 +189,6 @@ class r_param_cholesky_scaling(torch.nn.Module):
 
             return L@L.t()
 
-    # def rk(self,X):
-    #     L = torch.tril(self.L)+self.eye*self.reg
-    #     L=ensure_pos_diag(L)
-    #     # L=torch.sigmoid(ensure_pos_diag(L))
-    #
-    #     Z= self.Z
-    #     kzx = self.k(Z, X).evaluate()
-    #     mid= L.t()@kzx
-    #     if self.parametrize_Z:
-    #         kzz = self.k(Z).evaluate()
-    #         return (kzz@L@mid@kzx.t())
-    #     else:
-    #         return (self.kzz@L@mid@kzx.t())
-
 def get_hermite_weights(n):
     roots,weights = roots_hermite(n,False)
     return torch.tensor(roots).float(), torch.tensor(weights).float()
@@ -137,7 +196,7 @@ def get_hermite_weights(n):
 #TODO: FIX SCALING ISSUES
 
 class GWI(torch.nn.Module):
-    def __init__(self,N,m_q,m_p,k,r,reg=1e-3,sigma=1.0,APQ=False,empirical_sigma=1.0):
+    def __init__(self,N,m_q,m_p,k,r,reg=1e-1,sigma=1.0,APQ=False,empirical_sigma=1.0):
         super(GWI, self).__init__()
         self.r = r
         self.m_q = m_q
@@ -186,11 +245,16 @@ class GWI(torch.nn.Module):
         reg = torch.mean((pred-tmp)**2) #M_Q - M_P
         return self.N*torch.mean(vec**2)/(2. *self.sigma),reg#+torch.sum(tmp.diag())/(2*self.sigma)
 
-    def calc_NLL(self,y,X):
+    def calc_NLL(self,y,X,T=None):
         pred = self.m_q(X)
         vec=(y-pred)**2
-        rXX=self.r(X.unsqueeze(1)).squeeze(1)+self.sigma
-        return (0.5*torch.log(rXX)+0.5*vec/rXX + self.const).sum()
+        rXX = self.r(X.unsqueeze(1)).squeeze(1) + self.sigma
+        if T is not None:
+            rXX=rXX*T
+        a=(0.5*torch.log(rXX)).sum()
+        b=(0.5*vec/rXX).sum()
+        # print(a,b)
+        return (a+b).item() + self.const*pred.shape[0]
 
     def get_loss(self,y,X,Z_prime):
         tot_trace,hard_trace,tr_Q,tr_P=self.calc_hard_tr_term(X,Z_prime)
@@ -198,19 +262,24 @@ class GWI(torch.nn.Module):
         # print('Tr Q: ', tr_Q)
         # print('Tr P: ', tr_P)
         ll, reg= self.likelihood_reg(y,X)
-        D = torch.relu((tot_trace + reg))**0.5
+        D = torch.relu((tot_trace + reg))**0.5 #this feels a bit broken?! a small trace term should make a small NLL???????
         log_loss = self.N*tr_Q / (2. * self.sigma) + ll
+        # print(ll.mean())
+        # print((self.N*tr_Q / (2. * self.sigma)).mean())
         return log_loss/X.shape[0],D
+
     def mean_forward(self,X):
         return self.m_q(X)
+
     def mean_pred(self,X):
         with torch.no_grad():
             return self.m_q(X)
 
 class GVI_multi_classification(torch.nn.Module):
-    def __init__(self,N,m_q,m_p,k_list,r_list,reg=1e-3,sigma=1.0,eps=0.01,num_classes=10,APQ=False):
+    def __init__(self,Z,N,m_q,m_p,k_list,r_list,reg=1e-3,sigma=1.0,eps=0.01,num_classes=10,APQ=False):
         super(GVI_multi_classification, self).__init__()
         self.N=N
+        self.register_buffer('Z',Z)
         self.r = r_list #module list
         self.m_q = m_q #convnet
         self.sigma = sigma
@@ -295,6 +364,7 @@ class GVI_multi_classification(torch.nn.Module):
         full = torch.log(self.dist.cdf(cdf_term) + 1e-3).sum(1) - self.const_remove
         S = torch.sum(full.exp() * self.gh_weights, -1) / sqrt_pi
         return (1 - self.eps) * S + (self.eps / (self.num_classes - 1)) * (1 - S)
+
     def mean_pred(self,X):
         with torch.no_grad():
             m_q = self.m_q(X)
@@ -309,12 +379,25 @@ class GVI_multi_classification(torch.nn.Module):
             S = torch.sum(full.exp() * self.gh_weights, -1) / sqrt_pi
             return (1-self.eps)*S + (self.eps/(self.num_classes-1))*(1-S)
 
-    def calc_NLL(self,y,X):
+    def mean_pred_prior(self,X):
+        with torch.no_grad():
+            l = self.k.base_kernel
+            sim,_ = torch.max(l(X.flatten(1),self.Z.flatten(1)).evaluate(),dim=1)
+            mask = (sim < 3e-1).unsqueeze(-1)
+            true_preds = self.mean_pred(X)
+            prior_preds = torch.ones_like(true_preds)*self.m_p
+            output = (~mask)*true_preds + mask*prior_preds
+        return output
+
+    def calc_NLL(self,y,X,T=None):
         mean_pred,reg = self.likelihood_reg(y,X)
         sq_trq_mat=[]
         x_flattened = X.flatten(1).unsqueeze(1)
         for r in self.r:
-            sq_trq_mat.append(r(x_flattened).squeeze())
+            var = r(x_flattened).squeeze()
+            if T is not None:
+                var = var*T
+            sq_trq_mat.append(var)
         sq_trq_mat=torch.stack(sq_trq_mat,dim=1)
         trq_j = 2**0.5  * torch.gather(sq_trq_mat,1,y.unsqueeze(-1))  * self.gh_roots +torch.gather(mean_pred,1,y.unsqueeze(-1))
         cdf_term= (trq_j.unsqueeze(1)-mean_pred.unsqueeze(-1))/sq_trq_mat.unsqueeze(-1)

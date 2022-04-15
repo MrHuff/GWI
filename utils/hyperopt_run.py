@@ -1,9 +1,14 @@
+import copy
+
+import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import torch
 from gwi_VI.mean_models import *
 from gwi_VI.models import *
 from gpytorch.kernels import RBFKernel,LinearKernel,CosineKernel,ScaleKernel
 from utils.dataloaders import *
+import seaborn as sns
 from utils.regression_dataloaders import *
 import tqdm
 from hyperopt import hp,tpe,Trials,fmin,space_eval,STATUS_OK,STATUS_FAIL,rand
@@ -12,6 +17,10 @@ from utils.classification_dataloaders import *
 import dill
 import scipy
 from sklearn.metrics import roc_auc_score
+import matplotlib
+sns.set()
+matplotlib.use('agg')
+
 def cuda_r2(y_pred,y):
     res = (y_pred-y)**2
     return (1. - res.mean()/y.var()).item()
@@ -105,8 +114,7 @@ class mvp_experiment_object():
 
             k.requires_grad_(False)
         elif string == 'r_param_scaling':
-            k = r_param_cholesky_scaling(k=self.k, Z=self.Z, X=self.X_hat, sigma=self.k.outputscale.item(),parametrize_Z=self.VI_params['parametrize_Z']).to(
-                self.device)
+            k = r_param_cholesky_scaling(k=self.k, Z=self.Z, X=self.X_hat, sigma=self.k.outputscale.item(),parametrize_Z=self.VI_params['parametrize_Z']).to(self.device)
             k.init_L()
             # k.requires_grad_(True)
         # if is_q:
@@ -179,7 +187,7 @@ class experiment_regression_object():
         self.train_params=train_params
         self.VI_params = VI_params
         self.device = device
-        self.hyperopt_params = ['transformation', 'depth_x', 'width_x', 'bs', 'lr','m_P','sigma']
+        self.hyperopt_params = ['transformation', 'depth_x', 'width_x', 'bs', 'lr','m_P','sigma','m_factor']
         self.get_hyperparameterspace(hyper_param_space)
         self.generate_save_path()
         self.global_hyperit=0
@@ -208,8 +216,13 @@ class experiment_regression_object():
         self.X=self.dataloader.dataset.train_X
         self.Y=self.dataloader.dataset.train_y
         print(self.X.shape)
-        self.m=int(round(self.X.shape[0]**0.5))
+        if self.train_params['use_all_m']:
+            self.m=self.n
+        else:
+            self.m=int(round(self.X.shape[0]**0.5)*parameters_in['m_factor'])
         parameters_in['m'] = self.m
+        parameters_in['init_its'] = self.train_params['init_its']
+        self.sigma=parameters_in['sigma']
         mean_y_train = self.Y.mean().item()
         nn_params = {
             'd_in_x' : self.d,
@@ -224,7 +237,9 @@ class experiment_regression_object():
             self.Y_Z= self.Y[z_mask,:]
             self.X_hat =  self.X[torch.randperm(self.n)[:parameters_in['m']], :]
         else:
-            self.Z=self.X
+            self.Z= copy.deepcopy(self.X)
+            self.Y_Z= copy.deepcopy(self.Y)
+            self.X_hat=copy.deepcopy(self.X)
         if self.train_params['m_q_choice']=='kernel_sum':
             nn_params['k'] = self.k
             nn_params['Z'] = self.Z
@@ -246,9 +261,7 @@ class experiment_regression_object():
 
         ).to(self.device)
         self.lr = parameters_in['lr']
-
-
-        val_loss,test_loss,valr2,testr2=self.fit()
+        val_loss,test_loss,valr2,testr2,val_rsme,test_rsme,T=self.fit()
         self.global_hyperit+=1
         return  {
                 'loss': val_loss,
@@ -256,9 +269,11 @@ class experiment_regression_object():
                 'test_loss': test_loss,
                 'val_r2':valr2,
                 'test_r2':testr2,
-                 'net_params':nn_params
+                 'net_params':nn_params,
+                'val_rsme': val_rsme,
+                'test_rsme': test_rsme,
+                'T':T
                 }
-
 
     def get_hyperparameterspace(self,hyper_param_space):
         self.hyperparameter_space = {}
@@ -274,20 +289,41 @@ class experiment_regression_object():
             k = ScaleKernel(l)
             y_var = self.Y.var().item()
             k._set_outputscale(y_var)
-            ls_obj=ls_init(k,self.Y_Z,self.Z,sigma=parameters_in['sigma']).to(self.device)
+            ls_obj=ls_init(k,self.Y_Z,self.Z,sigma=parameters_in['sigma'],its=parameters_in['init_its']).to(self.device)
             k = ls_obj.pre_train()
             print(l.lengthscale,k.outputscale)
+            l.lengthscale = torch.clip(l.lengthscale,min=1.0)
+            print(l.lengthscale,k.outputscale)
+            # l.requires_grad_=False
             k.requires_grad_(False)
         elif string == 'r_param_scaling':
             k = r_param_cholesky_scaling(k=self.k, Z=self.Z, X=self.X_hat,
                                          sigma=self.k.outputscale.item(),
-                                         parametrize_Z=self.VI_params['parametrize_Z']).to(
-                self.device)
+                                         parametrize_Z=self.VI_params['parametrize_Z']).to(self.device)
+            print(self.k.outputscale,self.k.base_kernel.lengthscale)
+            k.init_L()
+        elif string == 'r_param_simple':
+            k = r_param_cholesky_simpler(k=self.k, Z=self.Z, X=self.X_hat,
+                                         parametrize_Z=self.VI_params['parametrize_Z'], sigma=self.k.outputscale.item()).to(self.device)
+            print(self.k.outputscale,self.k.base_kernel.lengthscale)
             k.init_L()
 
         return k
 
-    def validation_loop(self,mode='val'):
+    def optimize_T(self,mode='val'):
+        NLLs = []
+        RSMEs = []
+        R2s = []
+        t_list = np.linspace(1e-6,2.0,1000)
+        for t in t_list:
+            validation_loss_log_likelihood,r2,rmse = self.validation_loop(mode,t)
+            NLLs.append(validation_loss_log_likelihood)
+            RSMEs.append(rmse)
+            R2s.append(r2)
+        best_i = np.argmin(NLLs)
+        return t_list[best_i]
+
+    def validation_loop(self,mode='val',T=None):
         self.vi_obj.eval()
         self.dataloader.dataset.set(mode)
         losses=0.0
@@ -299,11 +335,12 @@ class experiment_regression_object():
             y = y.to(self.device)
             obs_size+=y.shape[0]
             with torch.no_grad():
-                NLL = self.vi_obj.calc_NLL(y, X)
+                NLL = self.vi_obj.calc_NLL(y, X,T)
                 y_pred = self.vi_obj.m_q(X)
+
             y_pred_list.append(y_pred)
             y_list.append(y)
-            losses+=NLL.item()
+            losses+=NLL
         Y = torch.cat(y_list)
         Y_pred = torch.cat(y_pred_list)
         r2 = cuda_r2(Y_pred,Y)
@@ -312,13 +349,12 @@ class experiment_regression_object():
         print(f'held out {mode} nll: ',validation_loss_log_likelihood)
         print(f'held out {mode} R^2: ',r2)
         print(f'held out {mode} rmse: ',rmse)
-        return validation_loss_log_likelihood,r2
+        return validation_loss_log_likelihood,r2,rmse
 
     def train_loop(self,opt):
         self.vi_obj.train()
         self.dataloader.dataset.set('train')
         pbar= tqdm.tqdm(self.dataloader)
-        self.vi_obj.m_q.requires_grad_(False)
         for i,(X,x_cat,y) in enumerate(pbar):
             X=X.to(self.device)
             y=y.to(self.device)
@@ -351,16 +387,18 @@ class experiment_regression_object():
         self.opt = torch.optim.Adam(self.vi_obj.parameters(), lr=self.lr)
         for i in range(self.train_params['epochs']):
             self.train_loop_m_q(self.opt)
-            validation_loss,r2=self.validation_loop('val')
+            validation_loss,r2,rsme=self.validation_loop('val')
             if r2>best:
                 best=r2
                 self.dump_model(self.global_hyperit)
+                counter=0
             else:
                 counter+=1
-                if counter>self.train_params['patience']:
+                if counter>10:
                     break
         self.load_model(self.global_hyperit)
         self.opt = torch.optim.Adam(self.vi_obj.parameters(), lr=self.lr)
+        self.vi_obj.r.k.requires_grad_(False)
         best=np.inf
         counter=0
         for i in range(self.train_params['epochs']):
@@ -369,19 +407,56 @@ class experiment_regression_object():
             #     self.vi_obj.r.requires_grad=False
 
             self.train_loop(self.opt)
-            validation_loss,r2=self.validation_loop('val')
+            validation_loss,r2,rsme=self.validation_loop('val')
             if validation_loss<best:
                 best=validation_loss
                 self.dump_model(self.global_hyperit)
+                counter=0
             else:
                 counter+=1
                 if counter>self.train_params['patience']:
                     break
         self.load_model(self.global_hyperit)
-        validation_loss,valr2=self.validation_loop('val')
-        test_loss,testr2 = self.validation_loop('test')
-        return validation_loss,test_loss,valr2,testr2
 
+        T = self.optimize_T('train')
+
+
+        validation_loss,valr2,val_rsme=self.validation_loop('val',T)
+        test_loss,testr2,test_rsme = self.validation_loop('test',T)
+        self.create_NLL_plot('val',T)
+        self.create_NLL_plot('test',T)
+
+        return validation_loss,test_loss,valr2,testr2,val_rsme,test_rsme,T
+
+    def create_NLL_plot(self,mode='val',T=None):
+        self.vi_obj.eval()
+        self.dataloader.dataset.set(mode)
+        y_list = []
+        y_pred_list = []
+        vars = []
+        for i, (X, x_cat, y) in enumerate(tqdm.tqdm(self.dataloader)):
+            X = X.to(self.device)
+            y = y.to(self.device)
+            with torch.no_grad():
+                var_X = X.unsqueeze(1)
+                var = self.vi_obj.r(var_X).squeeze() + self.sigma
+                if T is not None:
+                    var=var*T
+                y_pred = self.vi_obj.m_q(X)
+            y_pred_list.append(y_pred)
+            y_list.append(y)
+            vars.append(var)
+        Y = torch.cat(y_list).cpu().numpy().squeeze()
+        Y_pred = torch.cat(y_pred_list).cpu().numpy().squeeze()
+        mse_per_ob = (Y-Y_pred)**2
+        all_vars = torch.cat(vars).cpu().numpy()
+        df = pd.DataFrame(np.stack([Y,Y_pred,mse_per_ob,all_vars],axis=1),columns=['Y','Y_pred','mse','var'])
+        sns.scatterplot(data=df, x="Y", y="Y_pred")
+        plt.savefig(self.save_path+f'{mode}_y_plots_{self.global_hyperit}.png')
+        plt.clf()
+        sns.scatterplot(data=df, x="var", y="mse")
+        plt.savefig(self.save_path + f'{mode}_mse_var_{self.global_hyperit}.png')
+        plt.clf()
 
     def run(self):
         if os.path.exists(self.save_path + 'hyperopt_database.p'):
@@ -411,7 +486,7 @@ class experiment_classification_object():
         self.train_params=train_params
         self.VI_params = VI_params
         self.device = device
-        self.hyperopt_params = ['depth_x', 'width_x','depth_fc', 'bs', 'lr','m_P','sigma','transformation']
+        self.hyperopt_params = ['depth_x', 'width_x','depth_fc', 'bs', 'lr','m_P','sigma','transformation','m_factor']
         self.get_hyperparameterspace(hyper_param_space)
         self.generate_save_path()
         self.log_upper_bound = np.log(self.train_params['output_classes'])
@@ -446,8 +521,9 @@ class experiment_classification_object():
             y_list.append(y)
         self.X=torch.cat(x_list,dim=0)
         self.n= self.X.shape[0]
-        self.m=int(round(self.X.shape[0]**0.5))
+        self.m=int(round(self.X.shape[0]**0.5)*parameters_in['m_factor'])
         parameters_in['m'] = self.m
+        parameters_in['init_its'] = self.train_params['init_its']
         self.Y=torch.cat(y_list,dim=0).unsqueeze(-1)
 
         if self.n>parameters_in['m']:
@@ -478,6 +554,7 @@ class experiment_classification_object():
         elif self.train_params['m_q_choice']=='CNN':
             self.m_q = conv_net_classifier(**nn_params).to(self.device)
         self.vi_obj=GVI_multi_classification(
+                        Z = self.Z,
                         N=self.n,
                         m_q=self.m_q,
                         m_p=parameters_in['m_P'],
@@ -488,17 +565,20 @@ class experiment_classification_object():
                         APQ=self.VI_params['APQ']
                         ).to(self.device)
         self.lr = parameters_in['lr']
-        val_acc,val_nll,val_ood_auc,test_acc,test_nll,test_ood_auc=self.fit()
+        val_acc,val_nll,val_ood_auc,val_ood_auc_prior,test_acc,test_nll,test_ood_auc,test_ood_auc_prior,T=self.fit()
         self.global_hyperit+=1
         return {'loss': -val_acc,
                 'val_acc':val_acc,
                 'val_nll':val_nll,
                 'val_ood_auc':val_ood_auc,
+                'val_ood_auc_prior':val_ood_auc_prior,
                 'status': STATUS_OK,
                 'test_acc': test_acc,
                 'test_nll': test_nll,
                 'test_ood_auc': test_ood_auc,
-                'net_params': nn_params
+                'test_ood_auc_prior': test_ood_auc_prior,
+                'net_params': nn_params,
+                'T':T
                 }
 
     def get_hyperparameterspace(self,hyper_param_space):
@@ -515,7 +595,7 @@ class experiment_classification_object():
             l.requires_grad_(True)
             k = ScaleKernel(l)
             k._set_outputscale(1.0)
-            ls_obj=ls_init(k,self.Y_Z,self.Z,sigma=params['sigma']).to(self.device)
+            ls_obj=ls_init(k,self.Y_Z,self.Z,sigma=params['sigma'],its=params['init_its']).to(self.device)
             ls_obj.pre_train()
             print(l.lengthscale,k.outputscale)
             k.requires_grad_(False)
@@ -525,11 +605,12 @@ class experiment_classification_object():
             k = r_param_cholesky_scaling(k=self.k, Z=self.Z, X=self.X_hat,
                                          sigma=self.k.outputscale.item(),
                                          parametrize_Z=self.VI_params['parametrize_Z']).to(self.device)
+            print(k.outputscale,k.base_kernel.lengthscale)
             k.init_L()
 
         return k
 
-    def validation_loop(self,mode='val'): #acc and nll
+    def validation_loop(self,mode='val',T=None): #acc and nll
         self.vi_obj.eval()
         if mode=='val':
             dl=self.dataloader_val
@@ -542,7 +623,7 @@ class experiment_classification_object():
             X = X.float().to(self.device)
             y = y.to(self.device)
             with torch.no_grad():
-                NLL = self.vi_obj.calc_NLL(y, X)
+                NLL = self.vi_obj.calc_NLL(y, X,T)
                 softmax_output=self.predict_mean(X)
                 max_scores, max_idx_class = softmax_output.max(
                     dim=1)  # [B, n_classes] -> [B], # get values & indices with the max vals in the dim with scores for each class/label
@@ -569,7 +650,6 @@ class experiment_classification_object():
         # x_axis = (1.- classification_out_sample.float().mean(0)).cpu().numpy()
 
         # AUC = torch.mean(classification.float()).item()
-        print('AUC OOD: ', AUC)
         return AUC
 
     def OOD_AUC(self,mode='val'):
@@ -579,8 +659,8 @@ class experiment_classification_object():
         if mode == 'test':
             dl = self.dataloader_test
 
-        true_labels=[]
         entropies_in_sample=[]
+        entropies_in_sample_prior=[]
         for i, (X, y) in enumerate(tqdm.tqdm(dl)):
             X = X.float().to(self.device)
             # y = y.to(self.device)
@@ -589,10 +669,18 @@ class experiment_classification_object():
                 e = torch.sum(- p * torch.log(p),dim=1)
                 e = torch.nan_to_num(e,nan=0.0)
                 entropies_in_sample.append(e)
+
+                p_prior=self.predict_mean_prior(X)
+                e_prior = torch.sum(- p_prior * torch.log(p_prior),dim=1)
+                e_prior = torch.nan_to_num(e_prior,nan=0.0)
+                entropies_in_sample_prior.append(e_prior)
+
         entropies_in_sample = torch.cat(entropies_in_sample,dim=0)
+        entropies_in_sample_prior = torch.cat(entropies_in_sample_prior,dim=0)
         true_labels_in_sample = torch.zeros_like(entropies_in_sample)
 
         entropies_out_sample=[]
+        entropies_out_sample_prior=[]
         for i, (X, y) in enumerate(tqdm.tqdm(self.OOB_loader)):
             X = X.float().to(self.device)
             # y = y.to(self.device)
@@ -601,15 +689,24 @@ class experiment_classification_object():
                 e = torch.sum(- p * torch.log(p),dim=1)
                 e = torch.nan_to_num(e,nan=0.0)
                 entropies_out_sample.append(e)
+
+                p_prior=self.predict_mean_prior(X)
+                e_prior = torch.sum(- p_prior * torch.log(p_prior),dim=1)
+                e_prior = torch.nan_to_num(e_prior,nan=0.0)
+                entropies_out_sample_prior.append(e_prior)
         entropies_out_sample = torch.cat(entropies_out_sample, dim=0)
+        entropies_out_sample_prior = torch.cat(entropies_out_sample_prior, dim=0)
         true_labels_out_sample=torch.ones_like(entropies_out_sample)
         # in_sample_preds, in_sample_labels, out_sample_preds, out_sample_labels, threshold
         auc=self.get_auc(entropies_in_sample,true_labels_in_sample,entropies_out_sample,true_labels_out_sample,self.auc_interval)
-        return auc
+        auc_prior=self.get_auc(entropies_in_sample_prior,true_labels_in_sample,entropies_out_sample_prior,true_labels_out_sample,self.auc_interval)
+        print('standard AUC OOD: ', auc)
+        print('priornAUC OOD: ', auc_prior)
+
+        return auc,auc_prior
 
     def train_loop(self,opt):
         self.vi_obj.train()
-        self.vi_obj.m_q.requires_grad_(False)
         pbar= tqdm.tqdm(self.dataloader_train)
         for i,(X,y) in enumerate(pbar):
             # with autograd.detect_anomaly():
@@ -640,6 +737,14 @@ class experiment_classification_object():
             opt.zero_grad()
             tot_loss.backward()
             opt.step()
+    def optimize_T(self,mode='val'):
+        NLLs = []
+        t_list = np.linspace(0.1,5.0,100)
+        for t in t_list:
+            _,validation_loss_log_likelihood = self.validation_loop(mode,t)
+            NLLs.append(validation_loss_log_likelihood)
+        best_i = np.argmin(NLLs)
+        return t_list[best_i]
 
     def fit(self):
         best=0.0
@@ -649,11 +754,12 @@ class experiment_classification_object():
         for i in range(self.train_params['epochs']):
             self.train_loop_acc(self.opt)
             val_acc, val_nll = self.validation_loop('val')
-            print(self.k.outputscale, self.k.base_kernel.lengthscale)
+            # print(self.k.outputscale, self.k.base_kernel.lengthscale)
             if val_acc > best:
                 best = val_acc
                 print('woho new best model!')
                 self.dump_model(self.global_hyperit)
+                counter = 0
             else:
                 counter += 1
                 if counter > self.train_params['patience']:
@@ -665,22 +771,23 @@ class experiment_classification_object():
         for i in range(self.train_params['epochs']):
             self.train_loop(self.opt)
             val_acc,val_nll=self.validation_loop('val')
-            print(self.k.outputscale,self.k.base_kernel.lengthscale)
             if val_nll<best:
                 best=val_nll
                 print('woho new best model!')
                 self.dump_model(self.global_hyperit)
+                counter = 0
             else:
                 counter+=1
                 if counter>self.train_params['patience']:
                     break
 
         self.load_model(self.global_hyperit)
-        test_ood_auc = self.OOD_AUC('test')
-        val_ood_auc = self.OOD_AUC('val')
-        val_acc,val_nll=self.validation_loop('val')
-        test_acc,test_nll=self.validation_loop('test')
-        return val_acc,val_nll,val_ood_auc,test_acc,test_nll,test_ood_auc
+        T = self.optimize_T(mode='val')
+        test_ood_auc,test_ood_auc_prior = self.OOD_AUC('test')
+        val_ood_auc,val_ood_auc_prior = self.OOD_AUC('val')
+        val_acc,val_nll=self.validation_loop('val',T)
+        test_acc,test_nll=self.validation_loop('test',T)
+        return val_acc,val_nll,val_ood_auc,val_ood_auc_prior,test_acc,test_nll,test_ood_auc,test_ood_auc_prior,T
         # except Exception as e:
         #     torch.cuda.empty_cache()
         #     return -99999,-99999,-99999,-99999,-99999,-99999
@@ -710,6 +817,9 @@ class experiment_classification_object():
 
     def predict_mean(self,x_test):
         return self.vi_obj.mean_pred(x_test)
+
+    def predict_mean_prior(self, x_test):
+        return self.vi_obj.mean_pred_prior(x_test)
 
     def predict_uncertainty(self, x_test):
         return self.vi_obj.posterior_variance(x_test)

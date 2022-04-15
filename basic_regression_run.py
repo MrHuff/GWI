@@ -16,7 +16,7 @@ nn_params = {
     'output_dim': 1,
 }
 VI_params={
-    'q_kernel':'r_param_scaling',
+    'q_kernel':'r_param_simple',#'r_param_simple',#'r_param_scaling'
     'p_kernel':'rbf',
     'm_p':0.0,
     'reg':1e-2,
@@ -27,40 +27,44 @@ VI_params={
 h_space={
     'depth_x':[2],
     'width_x':[10],
-    'bs':[500],
+    'bs':[5000],
     'lr':[1e-2],
-    'm_P':[0,0.5,1.0],
-    'sigma':[1e-5],
+    'm_P':[1.0],
+    'sigma':[1e-6],
     'transformation':[torch.tanh],
+    'm_factor':[1.]
 }
 
 training_params = {
 
                    'patience': 100,
                    'device': 'cuda:0',
-                   'epochs':500,
+                   'epochs':2500,
                    'lr':1e-2,
                    'model_name':'GWI',
-                   'savedir':'regression_test_2',
+                   'savedir':'regression_test_3',
                    'seed':0,
                    'hyperits':2,
-                    'm_q_choice':'mlp'
+                    'm_q_choice':'mlp',
+                    'use_all_m':True,
+                    'init_its':150
                    }
 if __name__ == '__main__':
-    if os.path.exists('regression_test_2'):
-        shutil.rmtree('regression_test_2')
-
-    # ['boston', 'concrete', 'energy','KIN8NM', 'power','protein' ,'wine', 'yacht', 'naval']
-    dataset="naval"
-    fold=1
-    training_params['fold']=fold
-    training_params['dataset']=dataset
-
-    torch.random.manual_seed(np.random.randint(0,100000))
-    method = 'GWI'
-    if method=='GWI':
-        e=experiment_regression_object(hyper_param_space=h_space, VI_params=VI_params, train_params=training_params)
-        e.run()
+    for f in [True]:
+        dirname =f'regression_test_1_{f}'
+        training_params['savedir'] = dirname
+        training_params['use_all_m'] = f
+        if os.path.exists(dirname):
+            shutil.rmtree(dirname)
+        # ['boston', 'concrete', 'energy','KIN8NM', 'power','protein' ,'wine', 'yacht', 'naval']
+        dataset="yacht"
+        fold=1
+        training_params['fold']=fold
+        training_params['dataset']=dataset
+        method = 'GWI'
+        if method=='GWI':
+            e=experiment_regression_object(hyper_param_space=h_space, VI_params=VI_params, train_params=training_params)
+            e.run()
         # y_hat=e.predict_mean(X.cuda()).squeeze()
         # y_hat_q=e.predict_uncertainty(X.cuda()).squeeze()
         # l = (y_hat - 1.96*y_hat_q).cpu().squeeze()
