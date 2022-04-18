@@ -16,13 +16,12 @@ nn_params = {
     'output_dim': 1,
 }
 VI_params={
-    'q_kernel':'r_param_simple',#'r_param_simple',#'r_param_scaling'
+    'q_kernel':'r_param_scaling',#'r_param_simple',#'r_param_scaling'
     'p_kernel':'rbf',
     'm_p':0.0,
     'reg':1e-2,
     'r':50,
     'APQ': True,
-    'parametrize_Z':True
 }
 h_space={
     'depth_x':[2],
@@ -30,34 +29,37 @@ h_space={
     'bs':[5000],
     'lr':[1e-2],
     'm_P':[1.0],
-    'sigma':[1e-6],
+    'sigma':[1e-7],
     'transformation':[torch.tanh],
-    'm_factor':[1.]
+    'm_factor':[2.],
+    'parametrize_Z': [False],
+    'use_all_m': [False]
+
 }
 
 training_params = {
 
-                   'patience': 100,
+                   'patience': 250,
                    'device': 'cuda:0',
-                   'epochs':2500,
+                   'epochs':100,
                    'lr':1e-2,
                    'model_name':'GWI',
                    'savedir':'regression_test_3',
                    'seed':0,
-                   'hyperits':2,
+                   'hyperits':1,
                     'm_q_choice':'mlp',
-                    'use_all_m':True,
-                    'init_its':150
+                    'init_its':250
                    }
 if __name__ == '__main__':
-    for f in [True]:
+    #figure out new r that is able to be proportional to MSE
+    for f in [False]:
         dirname =f'regression_test_1_{f}'
         training_params['savedir'] = dirname
-        training_params['use_all_m'] = f
+        h_space['use_all_m'] = [f]
         if os.path.exists(dirname):
             shutil.rmtree(dirname)
         # ['boston', 'concrete', 'energy','KIN8NM', 'power','protein' ,'wine', 'yacht', 'naval']
-        dataset="yacht"
+        dataset="protein"
         fold=1
         training_params['fold']=fold
         training_params['dataset']=dataset

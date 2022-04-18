@@ -18,6 +18,7 @@ import dill
 import scipy
 from sklearn.metrics import roc_auc_score
 import matplotlib
+from utils.sa import  *
 sns.set()
 matplotlib.use('agg')
 
@@ -91,7 +92,6 @@ class mvp_experiment_object():
                         m_q=self.m_q,
                         m_p=self.m_p,
                         r=self.r,
-                        k=self.k,
                         sigma=self.VI_params['sigma'],
                         reg=self.VI_params['reg'],
                         APQ=self.VI_params['APQ'],
@@ -187,9 +187,10 @@ class experiment_regression_object():
         self.train_params=train_params
         self.VI_params = VI_params
         self.device = device
-        self.hyperopt_params = ['transformation', 'depth_x', 'width_x', 'bs', 'lr','m_P','sigma','m_factor']
+        self.hyperopt_params = ['transformation', 'depth_x', 'width_x', 'bs', 'lr','m_P','sigma','m_factor','parametrize_Z','use_all_m']
         self.get_hyperparameterspace(hyper_param_space)
         self.generate_save_path()
+        self.dataloader,self.ds = get_regression_dataloader(dataset=self.train_params['dataset'],fold=self.train_params['fold'],bs=100)
         self.global_hyperit=0
 
     def generate_save_path(self):
@@ -211,12 +212,12 @@ class experiment_regression_object():
         self.vi_obj=dill.loads(model_copy)
 
     def __call__(self,parameters_in):
-        self.dataloader,self.ds = get_regression_dataloader(dataset=self.train_params['dataset'],fold=self.train_params['fold'],bs=parameters_in['bs'])
+        self.dataloader.batch_size=parameters_in['bs']
         self.n,self.d = self.dataloader.dataset.train_X.shape
         self.X=self.dataloader.dataset.train_X
         self.Y=self.dataloader.dataset.train_y
         print(self.X.shape)
-        if self.train_params['use_all_m']:
+        if parameters_in['use_all_m']:
             self.m=self.n
         else:
             self.m=int(round(self.X.shape[0]**0.5)*parameters_in['m_factor'])
@@ -253,7 +254,6 @@ class experiment_regression_object():
                         m_q=self.m_q,
                         m_p=mean_y_train*parameters_in['m_P'],
                         r=self.r,
-                        k=self.k,
                         sigma=parameters_in['sigma'],
                         reg=self.VI_params['reg'],
                         APQ=self.VI_params['APQ'],
@@ -283,7 +283,7 @@ class experiment_regression_object():
     def get_kernels(self,string,parameters_in):
         if string=='rbf':
             l = RBFKernel(ard_num_dims=self.Z.shape[1])
-            ls=get_median_ls(self.X).to(self.device)
+            ls=get_median_ls(self.Z).to(self.device)
             print(ls)
             l._set_lengthscale(ls)
             k = ScaleKernel(l)
@@ -292,36 +292,103 @@ class experiment_regression_object():
             ls_obj=ls_init(k,self.Y_Z,self.Z,sigma=parameters_in['sigma'],its=parameters_in['init_its']).to(self.device)
             k = ls_obj.pre_train()
             print(l.lengthscale,k.outputscale)
-            l.lengthscale = torch.clip(l.lengthscale,min=1.0)
+            # l.lengthscale = torch.clip(l.lengthscale,min=2.0)
             print(l.lengthscale,k.outputscale)
-            # l.requires_grad_=False
+            l.requires_grad_(False)
             k.requires_grad_(False)
         elif string == 'r_param_scaling':
             k = r_param_cholesky_scaling(k=self.k, Z=self.Z, X=self.X_hat,
                                          sigma=self.k.outputscale.item(),
-                                         parametrize_Z=self.VI_params['parametrize_Z']).to(self.device)
+                                         parametrize_Z=parameters_in['parametrize_Z']).to(self.device)
             print(self.k.outputscale,self.k.base_kernel.lengthscale)
             k.init_L()
         elif string == 'r_param_simple':
             k = r_param_cholesky_simpler(k=self.k, Z=self.Z, X=self.X_hat,
-                                         parametrize_Z=self.VI_params['parametrize_Z'], sigma=self.k.outputscale.item()).to(self.device)
+                                         parametrize_Z=parameters_in['parametrize_Z'], sigma=self.k.outputscale.item()).to(self.device)
             print(self.k.outputscale,self.k.base_kernel.lengthscale)
             k.init_L()
 
         return k
 
-    def optimize_T(self,mode='val'):
-        NLLs = []
-        RSMEs = []
-        R2s = []
-        t_list = np.linspace(1e-6,2.0,1000)
-        for t in t_list:
-            validation_loss_log_likelihood,r2,rmse = self.validation_loop(mode,t)
-            NLLs.append(validation_loss_log_likelihood)
-            RSMEs.append(rmse)
-            R2s.append(r2)
-        best_i = np.argmin(NLLs)
-        return t_list[best_i]
+    def NLL_train(self,opt,mode='train',T=None):
+        # torch.autograd.set_detect_anomaly(True)
+        self.dataloader.dataset.set(mode)
+        self.vi_obj.eval()
+        obs_size=0.
+        losses=[]
+        for i, (X, x_cat, y) in enumerate(tqdm.tqdm(self.dataloader)):
+            X = X.to(self.device)
+            y = y.to(self.device)
+            obs_size += y.shape[0]
+            NLL = self.vi_obj.calc_NLL(y, X, T)
+            losses.append(NLL)
+        totloss = torch.stack(losses,dim=0).sum()
+        tot_NLLs = totloss/obs_size
+        opt.zero_grad()
+        tot_NLLs.backward()
+        opt.step()
+        return tot_NLLs.item()
+        # print('before',self.vi_obj.k.base_kernel.lengthscale)
+        # def closure():
+        #     obs_size=0.
+        #     losses=0.
+        #     print('inside',self.vi_obj.k.base_kernel.lengthscale)
+        #     for i, (X, x_cat, y) in enumerate(tqdm.tqdm(self.dataloader)):
+        #         X = X.to(self.device)
+        #         y = y.to(self.device)
+        #         obs_size += y.shape[0]
+        #         with torch.no_grad():
+        #             NLL = self.vi_obj.calc_NLL(y, X, T)
+        #         losses += NLL.item()
+        #     tot_NLLs = losses/obs_size
+        #     print('inside',tot_NLLs)
+        #     return torch.tensor([tot_NLLs]).float().to(self.device)
+        # self.nll_opt.step(closure)
+            # self.nll_opt.zero_grad()
+            # NLL.backward()
+            # self.nll_opt.step()
+
+
+    def optimize_ls(self,opt,mode='val',T=None):
+        best = np.inf
+        pbar= tqdm.tqdm(range(500))
+        for i in pbar:
+            self.NLL_train(opt=opt,mode=mode,T=T)
+            validation_loss_log_likelihood,r2,rmse=self.validation_loop(mode='val',T=T)
+            pbar.set_description(f"NLL ls {validation_loss_log_likelihood}")
+            if validation_loss_log_likelihood<best:
+                best = validation_loss_log_likelihood
+                self.dump_model(self.global_hyperit)
+
+
+    def optimize_T(self,mode='train'):
+
+        best = np.inf
+        pbar = tqdm.tqdm(range(1000))
+        t = torch.tensor([1.],requires_grad=True).float().to(self.device)
+        T = torch.nn.Parameter(t)
+        opt = torch.optim.Adam([T],1e-2)
+        for i in pbar:
+            b= T**2
+            print('T',b.item())
+            self.NLL_train(opt=opt, mode=mode, T=b)
+            validation_loss_log_likelihood, r2, rmse = self.validation_loop(mode='val', T=b)
+            pbar.set_description(f"NLL ls {validation_loss_log_likelihood}")
+            if validation_loss_log_likelihood < best:
+                best = validation_loss_log_likelihood
+                b_best = b.item()
+        return b_best
+        # NLLs = []
+        # RSMEs = []
+        # R2s = []
+        # t_list = np.linspace(1e-6,2,1000)
+        # for t in t_list:
+        #     validation_loss_log_likelihood,r2,rmse = self.validation_loop(mode,t)
+        #     NLLs.append(validation_loss_log_likelihood)
+        #     RSMEs.append(rmse)
+        #     R2s.append(r2)
+        # best_i = np.argmin(NLLs)
+        # return t_list[best_i]
 
     def validation_loop(self,mode='val',T=None):
         self.vi_obj.eval()
@@ -340,7 +407,7 @@ class experiment_regression_object():
 
             y_pred_list.append(y_pred)
             y_list.append(y)
-            losses+=NLL
+            losses+=NLL.item()
         Y = torch.cat(y_list)
         Y_pred = torch.cat(y_pred_list)
         r2 = cuda_r2(Y_pred,Y)
@@ -361,8 +428,28 @@ class experiment_regression_object():
             z_mask=torch.randperm(self.n)[:self.m]
             Z_prime = self.X[z_mask, :].to(self.device)
             log_loss,D=self.vi_obj.get_loss(y,X,Z_prime)
+            # print(self.vi_obj.r.k.base_kernel.lengthscale)
             pbar.set_description(f"D: {D.item()} log_loss: {log_loss.item() }")
             tot_loss = D + log_loss
+            opt.zero_grad()
+            tot_loss.backward()
+            opt.step()
+
+    def train_loop_NLL(self,opt):
+        self.vi_obj.train()
+        self.dataloader.dataset.set('train')
+        pbar= tqdm.tqdm(self.dataloader)
+        for i,(X,x_cat,y) in enumerate(pbar):
+            X=X.to(self.device)
+            y=y.to(self.device)
+            # z_mask=torch.randperm(self.n)[:self.m]
+            # Z_prime = self.X[z_mask, :].to(self.device)
+            # log_loss,D=self.vi_obj.get_loss(y,X,Z_prime)
+            NLL = self.vi_obj.calc_NLL(y,X)/y.shape[0]
+            # print(self.vi_obj.r.k.base_kernel.lengthscale)
+            # pbar.set_description(f"D: {D.item()} log_loss: {log_loss.item() }")
+            pbar.set_description(f"NLL lol: {NLL.item()}")
+            tot_loss = NLL
             opt.zero_grad()
             tot_loss.backward()
             opt.step()
@@ -402,10 +489,6 @@ class experiment_regression_object():
         best=np.inf
         counter=0
         for i in range(self.train_params['epochs']):
-
-            # if i > some_number:
-            #     self.vi_obj.r.requires_grad=False
-
             self.train_loop(self.opt)
             validation_loss,r2,rsme=self.validation_loop('val')
             if validation_loss<best:
@@ -418,9 +501,16 @@ class experiment_regression_object():
                     break
         self.load_model(self.global_hyperit)
 
+        # self.vi_obj.k.base_kernel.requires_grad_(True)
+        # sampler = UniformSampler(minval=2, maxval=5.0, cuda=self.device)
+        # sampler = GaussianSampler(mu=3, sigma=1.0, cuda=self.device)
+        # self.nll_opt = SimulatedAnnealing(self.vi_obj.k.base_kernel.parameters(), sampler= sampler)
         T = self.optimize_T('train')
-
-
+        self.vi_obj.zero_grad()
+        self.vi_obj.k.base_kernel.requires_grad_(True)
+        nll_opt = torch.optim.Adam(self.vi_obj.k.base_kernel.parameters(),lr=1e-2)
+        self.optimize_ls(nll_opt,'train',T)
+        self.load_model(self.global_hyperit)
         validation_loss,valr2,val_rsme=self.validation_loop('val',T)
         test_loss,testr2,test_rsme = self.validation_loop('test',T)
         self.create_NLL_plot('val',T)
@@ -451,9 +541,11 @@ class experiment_regression_object():
         mse_per_ob = (Y-Y_pred)**2
         all_vars = torch.cat(vars).cpu().numpy()
         df = pd.DataFrame(np.stack([Y,Y_pred,mse_per_ob,all_vars],axis=1),columns=['Y','Y_pred','mse','var'])
+        sns.lineplot(data=df,x='Y',y='Y')
         sns.scatterplot(data=df, x="Y", y="Y_pred")
         plt.savefig(self.save_path+f'{mode}_y_plots_{self.global_hyperit}.png')
         plt.clf()
+        # sns.lineplot(data=df,x='mse',y='mse')
         sns.scatterplot(data=df, x="var", y="mse")
         plt.savefig(self.save_path + f'{mode}_mse_var_{self.global_hyperit}.png')
         plt.clf()

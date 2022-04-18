@@ -42,6 +42,15 @@ class ls_init(torch.nn.Module):
             opt.step()
         return self.k
 
+
+class r_nn_kernel(torch.nn.Module):
+    def __init__(self,):
+        super(r_nn_kernel, self).__init__()
+        pass
+
+    
+
+
 class r_param_cholesky_simpler(torch.nn.Module):
     def __init__(self,k,Z,X,sigma,reg=1e-1,scale_init=1.0,parametrize_Z=False):
         super(r_param_cholesky_simpler, self).__init__()
@@ -55,7 +64,7 @@ class r_param_cholesky_simpler(torch.nn.Module):
         self.register_buffer('X',X)
         self.reg=reg
         self.sigma=sigma
-        self.fac=1-1e-2
+        self.fac=1-1e-3
 
     def init_L(self):
         with torch.no_grad():
@@ -70,6 +79,7 @@ class r_param_cholesky_simpler(torch.nn.Module):
     def forward(self,x1,x2=None):
         L = torch.tril(self.L)+self.eye*self.reg
         L = ensure_pos_diag(L)
+        # L = L.sigmoid()
         # L=torch.sigmoid(ensure_pos_diag(L))
         Z= self.Z
         if x2 is None:
@@ -77,28 +87,31 @@ class r_param_cholesky_simpler(torch.nn.Module):
             t= L.t() @ kzx #L\cdot k(Z,X)
             if len(t.shape)==3: #t=[L^T k(Z,X_i),L^T k(Z,X_{i+1}),]
                 T_mat = t.permute(0,2,1) @ t
-                out = self.k(x1).evaluate() - T_mat.clip(max=self.fac*self.sigma)
+                T_mat = T_mat.clip(max=self.fac * self.sigma)
+                out = self.k(x1).evaluate() - T_mat
                 # print(out)
                 return out
                 #lower bound the scale, interpret as nuancing the prior
                 #Too certain if NLL is shit.
             else:
                 T_mat = t.t() @ t
-                out =self.k(x1).evaluate() - T_mat.clip(max=self.fac*self.sigma)
+                T_mat = T_mat.clip(max=self.fac * self.sigma)
+                out =self.k(x1).evaluate() - T_mat
                 # print(out)
-
                 return out
         else:
             kzx_1 = self.k(Z, x1).evaluate()
             kzx_2 = self.k(Z, x2).evaluate()
             t= L.t() @ kzx_2
-            t_ = kzx_1 @ self.L
+            t_ = kzx_1 @ L
+            T_mat = (t_ @ t)
+            T_mat = T_mat.clip(max=self.fac*self.sigma)
+            # T_mat = T_mat * 1e-3
             # return torch.clip(self.scale.exp(),1e-6)*(self.k(x1,x2).evaluate()- kzx_1.t()@sol + t_ @ t/self.sigma)
             # return self.scale.exp()*(self.k(x1,x2).evaluate()- kzx_1.t()@sol + t_ @ t/self.sigma)
-            out=self.k(x1, x2).evaluate() - (t_ @ t).clip(max=self.fac*self.sigma)
+            out=self.k(x1, x2).evaluate() - T_mat
             # return torch.clip(self.scale.exp(), 1e-6) * out
             # print(out)
-
             return out
 
 class r_param_cholesky_scaling(torch.nn.Module):
@@ -128,7 +141,6 @@ class r_param_cholesky_scaling(torch.nn.Module):
             self.kzz_inv = torch.inverse(self.kzz+self.eye)
         self.L = torch.nn.Parameter(L)
         # geotorch.
-
     #L getting fucked up.
     def forward(self,x1,x2=None):
         L = torch.tril(self.L)+self.eye*self.reg
@@ -148,44 +160,33 @@ class r_param_cholesky_scaling(torch.nn.Module):
             if len(t.shape)==3: #t=[L^T k(Z,X_i),L^T k(Z,X_{i+1}),]
                 T_mat = t.permute(0,2,1) @ t
                 out = self.k(x1).evaluate()- kzx.permute(0,2,1)@sol + T_mat/self.sigma
-                # return out.clamp(min=1e-3)
-                # return torch.clip(self.scale.exp(),1e-6)*out
-                # return self.scale.exp()*out
-                # print(out)
                 return out
                 #lower bound the scale, interpret as nuancing the prior
                 #Too certain if NLL is shit.
 
             else:
                 T_mat = t.t() @ t
-                out =(self.k(x1).evaluate()- kzx.t()@sol + T_mat/self.sigma)
-                # out=ensure_pos_diag(out)
-                # return torch.clip(self.scale.exp(),1e-6)*out
-                # return self.scale.exp()*out
-                # print(out)
+                out =self.k(x1).evaluate()- kzx.t()@sol + T_mat/self.sigma
                 return out
         else:
             kzx_1 = self.k(Z, x1).evaluate()
             kzx_2 = self.k(Z, x2).evaluate()
             t= L.t() @ kzx_2
-            t_ = kzx_1 @ self.L
+            t_ = kzx_1 @ L
+            T_mat = t_ @ t
             if self.parametrize_Z:
                 kzz = self.k(Z).evaluate()
                 chol_z = torch.linalg.cholesky(kzz + self.eye * self.reg)
                 sol = torch.cholesky_solve(kzx_2, chol_z)
             else:
                 sol =self.kzz_inv @ kzx_2
-
-            # return torch.clip(self.scale.exp(),1e-6)*(self.k(x1,x2).evaluate()- kzx_1.t()@sol + t_ @ t/self.sigma)
-            # return self.scale.exp()*(self.k(x1,x2).evaluate()- kzx_1.t()@sol + t_ @ t/self.sigma)
-            out=(self.k(x1, x2).evaluate() - kzx_1.t() @ sol + t_ @ t / self.sigma)
-            # return torch.clip(self.scale.exp(), 1e-6) * out
+            out=self.k(x1, x2).evaluate() - kzx_1.t() @ sol +T_mat/ self.sigma
             return out
+
     def get_sigma_debug(self):
         with torch.no_grad():
             L = torch.tril(self.L)+self.eye*self.reg
             L=ensure_pos_diag(L)
-            # L = torch.sigmoid(ensure_pos_diag(L))
 
             return L@L.t()
 
@@ -196,12 +197,12 @@ def get_hermite_weights(n):
 #TODO: FIX SCALING ISSUES
 
 class GWI(torch.nn.Module):
-    def __init__(self,N,m_q,m_p,k,r,reg=1e-1,sigma=1.0,APQ=False,empirical_sigma=1.0):
+    def __init__(self,N,m_q,m_p,r,reg=1e-1,sigma=1.0,APQ=False,empirical_sigma=1.0):
         super(GWI, self).__init__()
         self.r = r
         self.m_q = m_q
         self.sigma=sigma
-        self.k=k
+        self.k=self.r.k
         self.reg = reg
         self.m_p=m_p
         self.m=self.r.Z.shape[0]
@@ -212,6 +213,7 @@ class GWI(torch.nn.Module):
         self.APQ = APQ
         self.log_empirical_sigma = np.log(empirical_sigma)
         self.const = (0.5*log2pi +self.log_empirical_sigma).item()
+
     def get_MPQ(self,batch_X=None):
         raise NotImplementedError
 
@@ -250,11 +252,14 @@ class GWI(torch.nn.Module):
         vec=(y-pred)**2
         rXX = self.r(X.unsqueeze(1)).squeeze(1) + self.sigma
         if T is not None:
-            rXX=rXX*T
-        a=(0.5*torch.log(rXX)).sum()
-        b=(0.5*vec/rXX).sum()
+            a=(0.5*torch.log(rXX*T)).sum()
+            b=(0.5*vec/(rXX*T)).sum()
+        else:
+            a=(0.5*torch.log(rXX)).sum()
+            b=(0.5*vec/rXX).sum()
+
         # print(a,b)
-        return (a+b).item() + self.const*pred.shape[0]
+        return (a+b) + self.const*pred.shape[0]
 
     def get_loss(self,y,X,Z_prime):
         tot_trace,hard_trace,tr_Q,tr_P=self.calc_hard_tr_term(X,Z_prime)

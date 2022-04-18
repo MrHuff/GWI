@@ -72,4 +72,4 @@ def extract_classification_data(results_folder):
 
 if __name__ == '__main__':
     extract_regression_data('learned_z_reg_5_results')
-    extract_classification_data('learned_z_class_5_results')
+    # extract_classification_data('learned_z_class_5_results')

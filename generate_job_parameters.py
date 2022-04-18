@@ -63,19 +63,18 @@ def generate_classification_jobs(job_name):
 def generate_regression_jobs(job_name):
     if not os.path.exists(job_name):
         os.makedirs(job_name)
-    # dataset = ['boston', 'concrete', 'energy','KIN8NM', 'power','protein' ,'wine', 'yacht', 'naval']
-    # use_all_m = [False,False,False,False,False,False,False,True,False]
-    use_all_m = [False,False,False,False,True]
-    dataset = ['protein','energy','power','naval','yacht']
+    dataset = ['boston', 'concrete', 'energy','KIN8NM', 'power','protein' ,'wine', 'yacht', 'naval']
+    use_all_m = [False,False,False,False,False,False,False,True,False]
+    # use_all_m = [False]
+    # dataset = ['yacht']
     init_it_list = [100]*len(dataset)
     VI_params = {
-        'q_kernel': 'r_param_simple',
+        'q_kernel': 'r_param_scaling',
         'p_kernel': 'rbf',
         'sigma': 1.0,
         'reg': 1e-2,
         'y_var': 10.0,
         'APQ': True,
-    'parametrize_Z':PARAM
 
     }
     h_space = {
@@ -84,13 +83,16 @@ def generate_regression_jobs(job_name):
         'bs': [100,250,500,1000,2500],
         'lr': [1e-2],
         'm_P': [0.0, 0.5,1.0],
-        'sigma': [1e-2,1e-3,1e-4,1e-5,1e-6,1e-7],
+        'sigma': [1e-4,1e-5,1e-6,1e-7],
         'transformation': [torch.tanh,torch.relu],
-        'm_factor':[0.5,0.75,1.0,1.5,2.0]
+        'm_factor':[0.5,0.75,1.0,1.5,2.0],
+    'parametrize_Z':[False,True],
+            'use_all_m':[False]
+
 
     }
     training_params = {
-        'patience': 50,
+        'patience': 250,
         'device': 'cuda:0',
         'epochs': reg_EPOCHS,
         'model_name': 'GWI',
@@ -106,9 +108,9 @@ def generate_regression_jobs(job_name):
     for ds,its,use_all  in zip(dataset,init_it_list,use_all_m):
         training_params['dataset'] = ds
         training_params['init_its'] = its
-        training_params['use_all_m']=use_all
         h_space_tmp=h_space
         if use_all:
+            h_space_tmp['use_all_m'] = [False,True]
             h_space_tmp['m_factor']=[1.0]
         for i in range(10):
             training_params['fold'] = i
@@ -119,4 +121,4 @@ def generate_regression_jobs(job_name):
 
 if __name__ == '__main__':
     # generate_classification_jobs('learned_z_class_5')
-    generate_regression_jobs('learned_z_reg_7')
+    generate_regression_jobs('reg_runs')
