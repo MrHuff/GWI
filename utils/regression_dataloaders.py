@@ -69,6 +69,7 @@ class UCIDatasets():
 
         url = self.datasets[self.name]
         file_name = url.split('/')[-1]
+        # uncomment for issues with urllib
         if not path.exists(self.data_path + "UCI/" + file_name):
             urllib.request.urlretrieve(
                 self.datasets[self.name], self.data_path + "UCI/" + file_name)
@@ -142,6 +143,7 @@ class UCIDatasets():
             x_test, y_test = self.data[test_index, :self.in_dim], self.data[test_index, self.in_dim:]
             x_means, x_stds = x_train.mean(axis=0), x_train.var(axis=0)**0.5
             y_means, y_stds = y_train.mean(axis=0), y_train.var(axis=0)**0.5
+            self.empirical_sigma = y_stds
             x_stds[x_stds==0]=1.0
             y_stds[y_stds==0]=1.0
             x_train = (x_train - x_means)/x_stds
@@ -149,7 +151,7 @@ class UCIDatasets():
             x_test = (x_test - x_means)/x_stds
             y_test = (y_test - y_means)/y_stds
 
-            X_train, X_val, y_train, y_val = train_test_split(x_train, y_train, test_size = 0.11, random_state = 42)
+            X_train, X_val, y_train, y_val = train_test_split(x_train, y_train, test_size = 0.11)
 
             inps = torch.from_numpy(X_train).float()
             tgts = torch.from_numpy(y_train).float()
@@ -194,6 +196,6 @@ class UCIDatasets():
 
 def get_regression_dataloader(dataset,fold,bs):
     ds = UCIDatasets(name=dataset,data_path='local_UCI_storage',n_splits=10)
-    x_tr,y_tr,x_val,y_val,x_tst,y_tst = ds.get_split_version_2(fold)
+    x_tr,y_tr,x_val,y_val,x_tst,y_tst = ds.get_split(fold)
     dataset = general_custom_dataset_regression(x_tr,y_tr,x_val,y_val,x_tst,y_tst)
     return custom_dataloader(dataset=dataset,batch_size=bs,shuffle=True),ds

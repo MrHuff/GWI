@@ -21,6 +21,8 @@ class general_custom_dataset(Dataset):
     def __init__(self,X,y,x_cat=[]):
         super(general_custom_dataset, self).__init__()
         self.split(X=X,y=y,X_cat=x_cat,mode='train')
+        self.split(X=X,y=y,X_cat=x_cat,mode='val')
+        self.split(X=X,y=y,X_cat=x_cat,mode='test')
 
     def split(self,X,y,mode='train',X_cat=[]):
         setattr(self,f'{mode}_y', y.float() if torch.is_tensor(y) else torch.from_numpy(y).float())

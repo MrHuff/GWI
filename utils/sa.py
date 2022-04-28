@@ -19,16 +19,8 @@ class UniformSampler(object):
         self.dtype = dtypes[dtype]
 
     def sample(self, size):
-        if self.dtype_str == 'float':
-            return self.dtype(*size).uniform_(
-                self.minval, self.maxval
-            )
-        elif self.dtype_str == 'int' or self.dtype_str == 'long':
-            return self.dtype(*size).random_(
-                self.minval, self.maxval + 1
-            )
-        else:
-            raise Exception("unknown dtype")
+        return self.dtype(*size).uniform_(
+            self.minval, self.maxval)
 
 
 class GaussianSampler(object):

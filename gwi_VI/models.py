@@ -42,77 +42,13 @@ class ls_init(torch.nn.Module):
             opt.step()
         return self.k
 
-
-class r_nn_kernel(torch.nn.Module):
-    def __init__(self,):
-        super(r_nn_kernel, self).__init__()
-        pass
-
-    
-
-
-class r_param_cholesky_simpler(torch.nn.Module):
-    def __init__(self,k,Z,X,sigma,reg=1e-1,scale_init=1.0,parametrize_Z=False):
-        super(r_param_cholesky_simpler, self).__init__()
-        self.k = k
-        self.register_buffer('eye',torch.eye(Z.shape[0]))
-        self.parametrize_Z = parametrize_Z
-        if parametrize_Z:
-            self.Z = torch.nn.Parameter(Z)
-        else:
-            self.register_buffer('Z',Z)
-        self.register_buffer('X',X)
-        self.reg=reg
-        self.sigma=sigma
-        self.fac=1-1e-3
-
-    def init_L(self):
-        with torch.no_grad():
-            kx= self.k(self.Z,self.X).evaluate()
-            self.kzz =self.k(self.Z).evaluate()
-            print(self.kzz)
-            # print('kzz rank: ',torch.linalg.matrix_rank(self.kzz))
-            L = torch.linalg.cholesky(torch.inverse(self.kzz+self.eye*self.reg)-torch.inverse(self.kzz+kx@kx.t()/self.sigma+self.eye*self.reg) + self.eye*self.reg)
-        self.L = torch.nn.Parameter(L)
-        # self.L = torch.nn.Parameter(torch.randn((self.Z.shape[0],50))*0.1)
-
-    def forward(self,x1,x2=None):
-        L = torch.tril(self.L)+self.eye*self.reg
-        L = ensure_pos_diag(L)
-        # L = L.sigmoid()
-        # L=torch.sigmoid(ensure_pos_diag(L))
-        Z= self.Z
-        if x2 is None:
-            kzx = self.k(Z, x1).evaluate()
-            t= L.t() @ kzx #L\cdot k(Z,X)
-            if len(t.shape)==3: #t=[L^T k(Z,X_i),L^T k(Z,X_{i+1}),]
-                T_mat = t.permute(0,2,1) @ t
-                T_mat = T_mat.clip(max=self.fac * self.sigma)
-                out = self.k(x1).evaluate() - T_mat
-                # print(out)
-                return out
-                #lower bound the scale, interpret as nuancing the prior
-                #Too certain if NLL is shit.
-            else:
-                T_mat = t.t() @ t
-                T_mat = T_mat.clip(max=self.fac * self.sigma)
-                out =self.k(x1).evaluate() - T_mat
-                # print(out)
-                return out
-        else:
-            kzx_1 = self.k(Z, x1).evaluate()
-            kzx_2 = self.k(Z, x2).evaluate()
-            t= L.t() @ kzx_2
-            t_ = kzx_1 @ L
-            T_mat = (t_ @ t)
-            T_mat = T_mat.clip(max=self.fac*self.sigma)
-            # T_mat = T_mat * 1e-3
-            # return torch.clip(self.scale.exp(),1e-6)*(self.k(x1,x2).evaluate()- kzx_1.t()@sol + t_ @ t/self.sigma)
-            # return self.scale.exp()*(self.k(x1,x2).evaluate()- kzx_1.t()@sol + t_ @ t/self.sigma)
-            out=self.k(x1, x2).evaluate() - T_mat
-            # return torch.clip(self.scale.exp(), 1e-6) * out
-            # print(out)
-            return out
+class KRR_mean(torch.nn.Module):
+    def __init__(self,r):
+        super(KRR_mean, self).__init__()
+        self.r = r
+        self.alpha = torch.nn.Parameter(torch.randn(self.r.Z.shape[0],1))
+    def forward(self,X,x_cat=[]):
+        return self.r.k(X,self.r.Z).evaluate()@self.alpha
 
 class r_param_cholesky_scaling(torch.nn.Module):
     def __init__(self,k,Z,X,sigma,reg=1e-1,scale_init=1.0,parametrize_Z=False):
@@ -130,17 +66,25 @@ class r_param_cholesky_scaling(torch.nn.Module):
         self.sigma=sigma
 
     def init_L(self):
-        with torch.no_grad():
-            kx= self.k(self.Z,self.X).evaluate()
-            self.kzz =self.k(self.Z).evaluate()
-            print(self.kzz)
-
-            # print('kzz rank: ',torch.linalg.matrix_rank(self.kzz))
-            L = torch.inverse(torch.linalg.cholesky(self.kzz+kx@kx.t()/self.sigma+self.eye))
+        num_instable = False
+        try:
+            with torch.no_grad():
+                kx = self.k(self.Z, self.X).evaluate()
+                self.kzz = self.k(self.Z).evaluate()
+                print(self.kzz)
+                L = torch.inverse(torch.linalg.cholesky(self.kzz+kx@kx.t()/self.sigma+self.eye))
+        except Exception as e:
+            print(e)
+            print('-----------------------------------------------------CHOLESKY ERROR--------------------------------------------')
+            num_instable = True
+        if num_instable:
+            torch.cuda.empty_cache()
+            with torch.no_grad():
+                self.kzz = self.k(self.Z).evaluate()
+                L= torch.randn_like(self.kzz)*0.1
         if not self.parametrize_Z:
-            self.kzz_inv = torch.inverse(self.kzz+self.eye)
+            self.kzz_inv = torch.inverse(self.kzz+self.eye*self.reg)
         self.L = torch.nn.Parameter(L)
-        # geotorch.
     #L getting fucked up.
     def forward(self,x1,x2=None):
         L = torch.tril(self.L)+self.eye*self.reg
@@ -172,7 +116,7 @@ class r_param_cholesky_scaling(torch.nn.Module):
             kzx_1 = self.k(Z, x1).evaluate()
             kzx_2 = self.k(Z, x2).evaluate()
             t= L.t() @ kzx_2
-            t_ = kzx_1 @ L
+            t_ = kzx_1.t() @ L
             T_mat = t_ @ t
             if self.parametrize_Z:
                 kzz = self.k(Z).evaluate()
@@ -197,7 +141,7 @@ def get_hermite_weights(n):
 #TODO: FIX SCALING ISSUES
 
 class GWI(torch.nn.Module):
-    def __init__(self,N,m_q,m_p,r,reg=1e-1,sigma=1.0,APQ=False,empirical_sigma=1.0):
+    def __init__(self,N,m_q,m_p,r,reg=1e-1,sigma=1.0,APQ=False,empirical_sigma=1.0,x_s=250):
         super(GWI, self).__init__()
         self.r = r
         self.m_q = m_q
@@ -206,8 +150,9 @@ class GWI(torch.nn.Module):
         self.reg = reg
         self.m_p=m_p
         self.m=self.r.Z.shape[0]
+        self.x_s=x_s
         self.register_buffer('eye',reg*torch.eye(self.m))
-        self.register_buffer('big_eye',100.*torch.eye(self.m))
+        self.register_buffer('big_eye',100.*torch.eye(self.x_s))
         self.U_calculated = False
         self.N=N
         self.APQ = APQ
@@ -224,9 +169,19 @@ class GWI(torch.nn.Module):
         eigs = eigs.abs()
         eigs = eigs-self.big_eye.diag()
         eigs = eigs[eigs > 0]
-        res = torch.sum(eigs**0.5)/self.m**0.5
+        res = torch.sum(eigs**0.5)/self.x_s**0.5
         # self.calculate_V()
         return res
+
+    def get_APQ_diagnose_xs(self,batch_X,Z_prime):
+        X=batch_X
+        rk_hat= 1/X.shape[0] * self.r(Z_prime,X)@self.k(X,Z_prime).evaluate()  #self.r.rk(X)/
+        eigs = torch.linalg.eigvals(rk_hat + self.big_eye)
+        eigs = eigs.abs()
+        eigs = eigs-self.big_eye.diag()
+        eigs = eigs[eigs > 0]
+
+        return eigs.detach().cpu().numpy()
 
     def calc_hard_tr_term(self,X,Z_prime):
         mpq= self.get_APQ(X,Z_prime)
@@ -235,9 +190,11 @@ class GWI(torch.nn.Module):
         mat = p_trace + q_trace -2*mpq#"*eig.diag().sum()
         return mat,-2*mpq,q_trace,p_trace
 
-    def posterior_variance(self,X):
+    def posterior_variance(self,X,T=None):
         with torch.no_grad():
-            posterior = self.r(X.unsqueeze(1)).squeeze()
+            posterior = self.r(X.unsqueeze(1)).squeeze() +self.sigma
+            if T is not None:
+                posterior = posterior*T
         return posterior**0.5
 
     def likelihood_reg(self,y,X):
@@ -281,7 +238,7 @@ class GWI(torch.nn.Module):
             return self.m_q(X)
 
 class GVI_multi_classification(torch.nn.Module):
-    def __init__(self,Z,N,m_q,m_p,k_list,r_list,reg=1e-3,sigma=1.0,eps=0.01,num_classes=10,APQ=False):
+    def __init__(self,Z,N,m_q,m_p,k_list,r_list,reg=1e-3,sigma=1.0,eps=0.01,num_classes=10,APQ=False,x_s=100):
         super(GVI_multi_classification, self).__init__()
         self.N=N
         self.register_buffer('Z',Z)
@@ -291,9 +248,10 @@ class GVI_multi_classification(torch.nn.Module):
         self.k = k_list #same prior or module list
         self.reg = reg
         self.m = r_list[0].Z.shape[0]
+        self.x_s=x_s
         self.m_p = m_p #vector with empirical frequency? or just 0.5 i.e. don't make it so certain
         self.register_buffer('eye', reg * torch.eye(self.m))
-        self.register_buffer('big_eye', 100. * torch.eye(self.m))
+        self.register_buffer('big_eye', 100. * torch.eye(self.x_s))
         self.U_calculated = False
         roots,weights=get_hermite_weights(50)
         self.register_buffer('gh_roots',roots.unsqueeze(0))
@@ -316,7 +274,7 @@ class GVI_multi_classification(torch.nn.Module):
             eigs = eigs.abs()
             eigs = eigs - self.big_eye.diag()
             eigs = eigs[eigs > 0]
-            res = torch.sum(eigs ** 0.5) / self.m ** 0.5
+            res = torch.sum(eigs ** 0.5) / self.x_s ** 0.5
             total_eig+=res
         return total_eig
 
@@ -357,39 +315,54 @@ class GVI_multi_classification(torch.nn.Module):
         D = torch.relu(tot_trace+ reg) ** 0.5
         return L.sum(),D
 
-    def mean_forward(self,X):
+    def mean_forward(self,X,T=None):
         m_q = self.m_q(X)
         sq_trq_mat = []
         x_flattened = X.flatten(1).unsqueeze(1)
         for r in self.r:
-            sq_trq_mat.append(r(x_flattened).squeeze())
+            var = r(x_flattened).squeeze()
+            sq_trq_mat.append(var)
         sq_trq_mat = torch.stack(sq_trq_mat, dim=1)
+        if T is not None:
+            sq_trq_mat = sq_trq_mat*T
+
         trq_j = 2 ** 0.5 * sq_trq_mat.unsqueeze(-1) * self.gh_roots + m_q.unsqueeze(-1)
         cdf_term = (trq_j.unsqueeze(1) - m_q.unsqueeze(-1).unsqueeze(-1)) / sq_trq_mat.unsqueeze(-1).unsqueeze(-1)
         full = torch.log(self.dist.cdf(cdf_term) + 1e-3).sum(1) - self.const_remove
         S = torch.sum(full.exp() * self.gh_weights, -1) / sqrt_pi
         return (1 - self.eps) * S + (self.eps / (self.num_classes - 1)) * (1 - S)
 
-    def mean_pred(self,X):
-        with torch.no_grad():
-            m_q = self.m_q(X)
-            sq_trq_mat = []
-            x_flattened = X.flatten(1).unsqueeze(1)
-            for r in self.r:
-                sq_trq_mat.append(r(x_flattened).squeeze())
-            sq_trq_mat = torch.stack(sq_trq_mat, dim=1)
-            trq_j = 2 ** 0.5 * sq_trq_mat.unsqueeze(-1) * self.gh_roots + m_q.unsqueeze(-1)
-            cdf_term = (trq_j.unsqueeze(1) - m_q.unsqueeze(-1).unsqueeze(-1)) / sq_trq_mat.unsqueeze(-1).unsqueeze(-1)
-            full = torch.log(self.dist.cdf(cdf_term) +1e-3).sum(1)-self.const_remove
-            S = torch.sum(full.exp() * self.gh_weights, -1) / sqrt_pi
-            return (1-self.eps)*S + (self.eps/(self.num_classes-1))*(1-S)
+    # def mean_pred(self,X,T=None):
+    #     with torch.no_grad():
+    #         m_q = self.m_q(X)
+    #         sq_trq_mat = []
+    #         x_flattened = X.flatten(1).unsqueeze(1)
+    #         for r in self.r:
+    #             var = r(x_flattened).squeeze()
+    #             if T is not None:
+    #                 sq_trq_mat.append(var * T)
+    #             else:
+    #                 sq_trq_mat.append(var)
+    #         sq_trq_mat = torch.stack(sq_trq_mat, dim=1)
+    #         trq_j = 2 ** 0.5 * sq_trq_mat.unsqueeze(-1) * self.gh_roots + m_q.unsqueeze(-1)
+    #         cdf_term = (trq_j.unsqueeze(1) - m_q.unsqueeze(-1).unsqueeze(-1)) / sq_trq_mat.unsqueeze(-1).unsqueeze(-1)
+    #         full = torch.log(self.dist.cdf(cdf_term) +1e-3).sum(1)-self.const_remove
+    #         S = torch.sum(full.exp() * self.gh_weights, -1) / sqrt_pi
+    #         return (1-self.eps)*S + (self.eps/(self.num_classes-1))*(1-S)
 
-    def mean_pred_prior(self,X):
+    def measure_similarity(self,X):
+        l = self.k.base_kernel
+        mat = l(X.flatten(1), self.Z.flatten(1)).evaluate()
+        sim_max = torch.max(mat)
+        sim_min = torch.min(mat)
+        return sim_max,sim_min
+
+    def mean_pred_prior(self,X,lim=1e-3,T=None):
         with torch.no_grad():
             l = self.k.base_kernel
             sim,_ = torch.max(l(X.flatten(1),self.Z.flatten(1)).evaluate(),dim=1)
-            mask = (sim < 3e-1).unsqueeze(-1)
-            true_preds = self.mean_pred(X)
+            mask = (sim < lim).unsqueeze(-1)
+            true_preds = self.mean_forward(X,T)
             prior_preds = torch.ones_like(true_preds)*self.m_p
             output = (~mask)*true_preds + mask*prior_preds
         return output
@@ -400,10 +373,12 @@ class GVI_multi_classification(torch.nn.Module):
         x_flattened = X.flatten(1).unsqueeze(1)
         for r in self.r:
             var = r(x_flattened).squeeze()
-            if T is not None:
-                var = var*T
             sq_trq_mat.append(var)
-        sq_trq_mat=torch.stack(sq_trq_mat,dim=1)
+        sq_trq_mat = torch.stack(sq_trq_mat, dim=1)
+        if T is not None:
+            sq_trq_mat = sq_trq_mat*T
+
+
         trq_j = 2**0.5  * torch.gather(sq_trq_mat,1,y.unsqueeze(-1))  * self.gh_roots +torch.gather(mean_pred,1,y.unsqueeze(-1))
         cdf_term= (trq_j.unsqueeze(1)-mean_pred.unsqueeze(-1))/sq_trq_mat.unsqueeze(-1)
         full = torch.log(self.dist.cdf(cdf_term) +1e-3).sum(1)-self.const_remove

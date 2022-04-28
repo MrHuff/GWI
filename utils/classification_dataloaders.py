@@ -185,15 +185,24 @@ def get_dataloaders_OOB(dataset_string,batch_size):
         split='train',
         download=True,
         transform=ToTensor())
+        test_set = SVHN(root="../data",
+                          split='test',
+                          download=True,
+                          transform=ToTensor())
 
     elif dataset_string=='FashionMNIST':
         dataset=MNIST( root="../data",
         train=True,
         download=True,
         transform=Compose([Pad(2),ToTensor()]))
+        test_set=MNIST( root="../data",
+        train=False,
+        download=True,
+        transform=Compose([Pad(2),ToTensor()]))
 
     train_loader = DataLoader(dataset,batch_size=batch_size)
-    return train_loader
+    test_loader = DataLoader(test_set,batch_size=batch_size)
+    return train_loader,test_loader
 
 # if __name__ == '__main__':
 #     dataset=FashionMNIST( root="../data",

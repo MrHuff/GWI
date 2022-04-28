@@ -1,4 +1,4 @@
-from utils.hyperopt_run import *
+from utils.custom_run import *
 from simulate_data.unit_test_data import *
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -11,28 +11,43 @@ sns.set()
 nn_params = {
     'layers_x': [10,10],
     'cat_size_list': [],
-    'transformation': torch.tanh,
     'output_dim': 1,
 }
 VI_params={
-    'q_kernel':'r_param_scaling',
+    'q_kernel':'r_param_scaling',#'r_param_simple',#'r_param_scaling'
     'p_kernel':'rbf',
-    'sigma':1e-4,
     'm_p':0.0,
-    'reg':1e-3,
+    'reg':1e-2,
     'r':50,
-    'y_var': 10.0,
-    'APQ':True,
-    'parametrize_Z':True
+    'APQ': True,
+}
+h_space={
+    'depth_x':[2],
+    'width_x':[10],
+    'bs':[1000],
+    'lr':[1e-2],
+    'm_P':[0.0],
+    'sigma':[1e-7],
+    'transformation':[torch.nn.Tanh()],
+    'm_factor':[1.],
+    'parametrize_Z': [False],
+    'use_all_m': [False],
+    'm_q_choice': ['mlp'],
+
 }
 
-training_params = {'bs': 900,
-                   'patience': 10,
-                   'device': 'cuda:0',
-                   'epochs':10,
-                   'lr':1e-2
-                   }
+training_params = {
 
+                   'patience': 1000,
+                   'device': 'cuda:0',
+                   'epochs':1000,
+                   'lr':1e-2,
+                   'model_name':'GWI',
+                   'savedir':'regression_test_3',
+                   'seed':0,
+                   'hyperits':1,
+                    'init_its':250
+                   }
 def random_split(X,y):
     X_tr, X_val, y_tr, y_val=train_test_split(X, y, test_size=0.1, random_state=42)
     return X_tr, X_val, y_tr, y_val
@@ -95,7 +110,7 @@ def sim_run(index,method):
     print(y_tr.std().item())
     VI_params['y_var'] = y_tr.std().item()
     if method=='GWI':
-        e=mvp_experiment_object(X=X_tr, Y=y_tr, nn_params=nn_params, VI_params=VI_params, train_params=training_params)
+        e=regression_object(X=X_tr, Y=y_tr,hyper_param_space=h_space, VI_params=VI_params, train_params=training_params)
         e.fit()
         y_hat=e.predict_mean(X.cuda()).squeeze()
         y_hat_q=e.predict_uncertainty(X.cuda()).squeeze()

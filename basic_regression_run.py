@@ -1,5 +1,7 @@
 import os.path
 
+import torch.nn
+
 from utils.hyperopt_run import *
 from simulate_data.unit_test_data import *
 import seaborn as sns
@@ -26,28 +28,29 @@ VI_params={
 h_space={
     'depth_x':[2],
     'width_x':[10],
-    'bs':[5000],
+    'bs':[1000],
     'lr':[1e-2],
-    'm_P':[1.0],
+    'm_P':[0.0],
     'sigma':[1e-7],
-    'transformation':[torch.tanh],
-    'm_factor':[2.],
-    'parametrize_Z': [False],
-    'use_all_m': [False]
+    'transformation':[torch.nn.Tanh()],
+    'm_factor':[1.],
+    'parametrize_Z': [True],
+    'use_all_m': [False],
+    'm_q_choice': ['mlp'],
+    'x_s':[50],
 
 }
 
 training_params = {
 
-                   'patience': 250,
+                   'patience': 1000,
                    'device': 'cuda:0',
-                   'epochs':100,
+                   'epochs':1000,
                    'lr':1e-2,
                    'model_name':'GWI',
                    'savedir':'regression_test_3',
                    'seed':0,
                    'hyperits':1,
-                    'm_q_choice':'mlp',
                     'init_its':250
                    }
 if __name__ == '__main__':
@@ -58,8 +61,8 @@ if __name__ == '__main__':
         h_space['use_all_m'] = [f]
         if os.path.exists(dirname):
             shutil.rmtree(dirname)
-        # ['boston', 'concrete', 'energy','KIN8NM', 'power','protein' ,'wine', 'yacht', 'naval']
-        dataset="protein"
+        # ['boston', 'concrete', 'energy','KIN8NM', 'power','protein' ,'wine', 'wine', 'naval']
+        dataset="power"
         fold=1
         training_params['fold']=fold
         training_params['dataset']=dataset
