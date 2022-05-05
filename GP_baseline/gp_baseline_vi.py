@@ -11,7 +11,7 @@ from utils.dataloaders import *
 class GPModel(ApproximateGP):
     def __init__(self, inducing_points):
         variational_distribution = CholeskyVariationalDistribution(inducing_points.size(0))
-        variational_strategy = VariationalStrategy(self, inducing_points, variational_distribution, learn_inducing_locations=True)
+        variational_strategy = VariationalStrategy(self, inducing_points, variational_distribution, learn_inducing_locations=False)
         super(GPModel, self).__init__(variational_strategy)
         self.mean_module = gpytorch.means.ConstantMean()
         self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel())
@@ -29,8 +29,10 @@ class gp_svi_baseline(torch.nn.Module):
         self.likelihood = gpytorch.likelihoods.GaussianLikelihood()
         self.n,self.d = train_x.shape
         m=int(round(self.n**0.5))
-        inducing_points = train_x[torch.randperm(self.n)[:m],:]
-        self.model = GPModel(inducing_points)
+        perm = torch.randperm(self.n)
+        self.inducing_points = train_x[perm[:m],:]
+        self.inducing_points_y = train_y[perm[:m],:]
+        self.model = GPModel(self.inducing_points)
         dataset = general_custom_dataset(train_x,train_y)
         dataset.set('train')
         self.dl = custom_dataloader(dataset,batch_size=train_params['bs'],shuffle=True)
@@ -62,7 +64,7 @@ class gp_svi_baseline(torch.nn.Module):
         self.model.eval()
         self.likelihood.eval()
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
-            observed_pred = self.model(x_test)
+            observed_pred = self.likelihood(self.model(x_test))
         lower, upper = observed_pred.confidence_region()
         mean = observed_pred.mean
         return mean,lower,upper

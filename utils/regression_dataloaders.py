@@ -151,7 +151,7 @@ class UCIDatasets():
             x_test = (x_test - x_means)/x_stds
             y_test = (y_test - y_means)/y_stds
 
-            X_train, X_val, y_train, y_val = train_test_split(x_train, y_train, test_size = 0.11)
+            X_train, X_val, y_train, y_val = train_test_split(x_train, y_train, test_size = 0.1)
 
             inps = torch.from_numpy(X_train).float()
             tgts = torch.from_numpy(y_train).float()

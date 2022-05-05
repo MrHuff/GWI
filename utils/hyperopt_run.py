@@ -1,4 +1,5 @@
 import copy
+import os.path
 
 import matplotlib.pyplot as plt
 import torch
@@ -63,11 +64,10 @@ def get_median_ls( X):
             ret = torch.tensor(1.0)
         return ret
 
-
-
 class experiment_regression_object():
     def __init__(self,hyper_param_space,VI_params,train_params,device='cuda:0'):
         self.train_params=train_params
+        self.max_its = train_params['hyperits']
         self.VI_params = VI_params
         self.device = device
         self.hyperopt_params = ['transformation', 'depth_x', 'width_x', 'bs', 'lr','m_P','sigma','m_factor','m_q_choice','parametrize_Z','use_all_m','x_s']
@@ -100,23 +100,47 @@ class experiment_regression_object():
 
     def __call__(self,parameters_in):
         print(parameters_in)
-        model_copy = dill.dumps(self.trials)
-        pickle.dump(model_copy,
-                    open(self.save_path + 'hyperopt_database.p',
-                         "wb"))
+
         self.dataloader,self.ds = get_regression_dataloader(dataset=self.train_params['dataset'],fold=self.train_params['fold'],bs=parameters_in['bs'])
         self.n,self.d = self.dataloader.dataset.train_X.shape
         self.X=self.dataloader.dataset.train_X
         self.Y=self.dataloader.dataset.train_y
-        print(self.X.shape)
+        self.sigma=parameters_in['sigma']
+        self.empirical_sigma =self.ds.empirical_sigma
+
+        if os.path.exists(self.save_path + f'best_model_{self.global_hyperit}.pt'):
+            val_loss, test_loss, valr2, testr2, val_rsme, test_rsme, T = self.final_evaluation()
+            self.global_hyperit += 1
+            model_copy = dill.dumps(self.trials)
+            pickle.dump(model_copy,
+                        open(self.save_path + 'hyperopt_database.p',
+                             "wb"))
+            return {
+                'loss': val_loss,
+                'status': STATUS_OK,
+                'test_loss': test_loss,
+                'val_r2': valr2,
+                'test_r2': testr2,
+                'net_params': 'load model and check',
+                'val_rsme': val_rsme,
+                'test_rsme': test_rsme,
+                'T': T
+            }
+
+
         if parameters_in['use_all_m']:
             self.m=self.n
-            parameters_in['x_s']=self.n
         else:
             self.m=int(round(self.X.shape[0]**0.5)*parameters_in['m_factor'])
+
+        # if parameters_in['x_s']==0.0 or parameters_in['x_s']>self.m:
+        if parameters_in['x_s']==0.0:
+            parameters_in['x_s']=self.m
+            print(parameters_in['x_s'])
+
+
         parameters_in['m'] = self.m
         parameters_in['init_its'] = self.train_params['init_its']
-        self.sigma=parameters_in['sigma']
         mean_y_train = self.Y.mean().item()
         nn_params = {
             'd_in_x' : self.d,
@@ -125,6 +149,7 @@ class experiment_regression_object():
             'transformation':parameters_in['transformation'],
             'layers_x': [parameters_in['width_x']]*parameters_in['depth_x'],
         }
+        self.nn_params = copy.deepcopy(nn_params)
         if self.n>parameters_in['m']:
             z_mask=torch.randperm(self.n)[:parameters_in['m']]
             self.Z =  self.X[z_mask, :]
@@ -135,7 +160,6 @@ class experiment_regression_object():
             self.Y_Z= copy.deepcopy(self.Y)
             self.X_hat=copy.deepcopy(self.X)
         self.k=self.get_kernels(self.VI_params['p_kernel'],parameters_in)
-        self.r=self.get_kernels(self.VI_params['q_kernel'],parameters_in)
         if parameters_in['m_q_choice']=='kernel_sum':
             nn_params['k'] = self.k
             nn_params['Z'] = self.Z
@@ -143,29 +167,36 @@ class experiment_regression_object():
         elif parameters_in['m_q_choice']=='mlp':
             self.m_q = feature_map(**nn_params).to(self.device)
         elif parameters_in['m_q_choice']=='krr':
+            self.r = self.get_kernels(self.VI_params['q_kernel'], parameters_in)
             self.m_q = KRR_mean(r=self.r)
+        self.r = self.get_kernels(self.VI_params['q_kernel'], parameters_in)
 
         self.vi_obj=GWI(
                         N=self.X.shape[0],
                         m_q=self.m_q,
                         m_p=mean_y_train*parameters_in['m_P'],
                         r=self.r,
-                        sigma=parameters_in['sigma'],
+                        sigma=self.sigma,
                         reg=self.VI_params['reg'],
                         APQ=self.VI_params['APQ'],
                     empirical_sigma=self.ds.empirical_sigma,
             x_s=parameters_in['x_s']
         ).to(self.device)
         self.lr = parameters_in['lr']
-        val_loss,test_loss,valr2,testr2,val_rsme,test_rsme,T=self.fit()
+        self.fit()
+        val_loss,test_loss,valr2,testr2,val_rsme,test_rsme,T= self.final_evaluation()
         self.global_hyperit+=1
+        model_copy = dill.dumps(self.trials)
+        pickle.dump(model_copy,
+                    open(self.save_path + 'hyperopt_database.p',
+                         "wb"))
         return  {
                 'loss': val_loss,
                 'status': STATUS_OK,
                 'test_loss': test_loss,
                 'val_r2':valr2,
                 'test_r2':testr2,
-                 'net_params':nn_params,
+                 'net_params':self.nn_params,
                 'val_rsme': val_rsme,
                 'test_rsme': test_rsme,
                 'T':T
@@ -177,28 +208,44 @@ class experiment_regression_object():
             self.hyperparameter_space[string] = hp.choice(string, hyper_param_space[string])
 
     def get_kernels(self,string,parameters_in):
-        if string=='rbf':
-            l = RBFKernel(ard_num_dims=self.Z.shape[1])
-            ls=get_median_ls(self.Z).to(self.device)
-            print(ls)
-            l._set_lengthscale(ls)
-            k = ScaleKernel(l)
-            y_var = self.Y.var().item()
-            k._set_outputscale(y_var)
-            ls_obj=ls_init(k,self.Y_Z,self.Z,sigma=parameters_in['sigma'],its=parameters_in['init_its']).to(self.device)
-            k = ls_obj.pre_train()
-            print(l.lengthscale,k.outputscale)
-            # l.lengthscale = torch.clip(l.lengthscale,min=2.0)
-            print(l.lengthscale,k.outputscale)
-            l.requires_grad_(False)
-            k.requires_grad_(False)
-        elif string == 'r_param_scaling':
-            k = r_param_cholesky_scaling(k=self.k, Z=self.Z, X=self.X_hat,
-                                         sigma=self.k.outputscale.item(),
-                                         parametrize_Z=parameters_in['parametrize_Z']).to(self.device)
-            print(self.k.outputscale,self.k.base_kernel.lengthscale)
-            k.init_L()
+        self.prefit_mse = False
 
+        if string=='rbf':
+
+            ls_obj = init_kernel_GP(self.Y_Z,self.Z,self.empirical_sigma,self.dataloader,its=parameters_in['init_its']).to(self.device)
+            k,self.sigma = ls_obj.fit()
+            print('LS: ',k.base_kernel.lengthscale)
+            print('Output scale: ',k.outputscale)
+            print('Noise parameter: ',self.sigma)
+            k.requires_grad_(False)
+
+            # l = RBFKernel(ard_num_dims=self.Z.shape[1])
+            # ls=get_median_ls(self.Z).to(self.device)
+            # # ls=torch.tensor([0.1]).to(self.device)
+            # print(ls)
+            # l._set_lengthscale(ls)
+            # k = ScaleKernel(l)
+            # y_var = self.Y.var().item()
+            # k._set_outputscale(y_var)
+            # ls_obj=ls_init(k,self.Y_Z,self.Z,sigma=parameters_in['sigma'],its=parameters_in['init_its']).to(self.device)
+            # k = ls_obj.pre_train()
+            # print(l.lengthscale,k.outputscale)
+            # # l.lengthscale = torch.clip(l.lengthscale,min=2.0)
+            # print(l.lengthscale,k.outputscale)
+            # l.requires_grad_(False)
+            # k.requires_grad_(False)
+
+        elif string=='nn_kernel':
+            k = neural_network_kernel_lol(k=self.k,Z=self.Z,m_Q=self.m_q,sigma=self.k.outputscale.item(),m=self.m,nn_params=self.nn_params)
+            # self.prefit_mse = True
+
+        elif string == 'r_param_scaling':
+            k = r_param_cholesky_scaling(k=self.k, Z=self.Z, X=self.X_hat, sigma=self.k.outputscale.item(),
+                                         parametrize_Z=parameters_in['parametrize_Z'])
+            print(self.k.outputscale,self.k.base_kernel.lengthscale)
+            k = k.to("cpu")
+            k.init_L()
+            k.to(self.device)
 
         return k
 
@@ -209,10 +256,14 @@ class experiment_regression_object():
         obs_size=0.
         losses=[]
         for i, (X, x_cat, y) in enumerate(tqdm.tqdm(self.dataloader)):
+            if torch.is_tensor(T):
+                b=T**2
+            else:
+                b=T
             X = X.to(self.device)
             y = y.to(self.device)
             obs_size += y.shape[0]
-            NLL = self.vi_obj.calc_NLL(y, X, T)
+            NLL = self.vi_obj.calc_NLL(y, X, b)
             losses.append(NLL)
         totloss = torch.stack(losses,dim=0).sum()
         tot_NLLs = totloss/obs_size
@@ -222,14 +273,17 @@ class experiment_regression_object():
         return tot_NLLs.item()
 
     def optimize_ls(self,mode='val',T=None):
+        self.vi_obj.requires_grad_(False)
+        self.vi_obj.r.parametrize_Z=True
         self.vi_obj.zero_grad()
         self.vi_obj.k.base_kernel.requires_grad_(True)
-        opt = torch.optim.Adam(self.vi_obj.k.base_kernel.parameters(), lr=1e-2)
+        opt = torch.optim.Adam(self.vi_obj.k.base_kernel.parameters(), lr=1e-3)
         best = self.best
         pbar= tqdm.tqdm(range(1000))
         for i in pbar:
-            self.NLL_train(opt=opt,mode=mode,T=T)
-            validation_loss_log_likelihood,r2,rmse=self.validation_loop(mode='val',T=T)
+            # self.NLL_train(opt=opt,mode=mode,T=T)
+            self.train_loop(opt,T,mode)
+            validation_loss_log_likelihood,r2,rmse,elbo_loss=self.validation_loop(mode='val',T=T)
             pbar.set_description(f"NLL ls {validation_loss_log_likelihood}")
             if validation_loss_log_likelihood<best:
                 best = validation_loss_log_likelihood
@@ -240,47 +294,55 @@ class experiment_regression_object():
         NLLs = []
         RSMEs = []
         R2s = []
+        val_elbos=[]
         t_list = np.linspace(1e-9,2.,1000)
-        for t in t_list:
-            validation_loss_log_likelihood,r2,rmse = self.validation_loop(mode,t)
+        for t in tqdm.tqdm(t_list):
+            validation_loss_log_likelihood,r2,rmse,val_elbo = self.validation_loop(mode,t)
             NLLs.append(validation_loss_log_likelihood)
+            val_elbos.append(val_elbo)
             RSMEs.append(rmse)
             R2s.append(r2)
         best_i = np.nanargmin(NLLs)
         return t_list[best_i]
-        # best = np.inf
-        # pbar = tqdm.tqdm(range(1000))
-        # sampler = UniformSampler(minval=0.0, maxval=2.0, cuda=self.device)
-        # # sampler = GaussianSampler(mu=3, sigma=1.0, cuda=self.device)
-        # t = torch.tensor([1.],requires_grad=False).float().to(self.device)
-        # T = torch.nn.Parameter(t,requires_grad=False)
-        # opt = SimulatedAnnealing([T], sampler= sampler)
-        # # opt = torch.optim.Adam([T],1e-2)
-        # for i in pbar:
-        #     self.NLL_train_annealing(opt=opt, mode=mode,T=T)
-        #     validation_loss_log_likelihood, r2, rmse = self.validation_loop(mode='val', T=T)
-        #     pbar.set_description(f"NLL ls {validation_loss_log_likelihood}")
-        #     if validation_loss_log_likelihood < best:
-        #         best = validation_loss_log_likelihood
-        #         b_best = T.item()
-        # return b_best
 
+    def optimize_T_gradient(self,mode='val'):
+        best = np.inf
+        pbar = tqdm.tqdm(range(1000))
+        t = torch.tensor(torch.rand(1,1).float(),requires_grad=True).float().to(self.device)
+        T = torch.nn.Parameter(t)
+        opt = torch.optim.Adam([T],1e0)
+        for i in pbar:
+            print(T)
+            self.NLL_train(opt=opt, mode=mode, T=T)
+            validation_loss_log_likelihood,r2,rmse,elbo_loss=self.validation_loop(mode=mode,T=(T**2).item())
+            pbar.set_description(f"NLL ls {validation_loss_log_likelihood}")
+            if validation_loss_log_likelihood < best:
+                best = validation_loss_log_likelihood
+                b_best = (T**2).item()
+        return b_best
 
     def validation_loop(self,mode='val',T=None):
         self.vi_obj.eval()
         self.dataloader.dataset.set(mode)
         losses=0.0
         obs_size=0
+        elbo_loss = 0.0
+
         y_list = []
         y_pred_list = []
         for i,(X,x_cat,y) in enumerate(tqdm.tqdm(self.dataloader)):
             X = X.to(self.device)
             y = y.to(self.device)
+            z_mask=torch.randperm(self.n)[:self.vi_obj.x_s]
+            Z_prime = self.X[z_mask, :].to(self.device)
             obs_size+=y.shape[0]
             with torch.no_grad():
+
                 NLL = self.vi_obj.calc_NLL(y, X,T)
                 y_pred = self.vi_obj.m_q(X)
-
+                log_loss,D= self.vi_obj.get_loss(y, X,Z_prime,T)
+                tot_loss = D + log_loss
+            elbo_loss+=tot_loss.item()
             y_pred_list.append(y_pred)
             y_list.append(y)
             losses+=NLL.item()
@@ -288,15 +350,32 @@ class experiment_regression_object():
         Y_pred = torch.cat(y_pred_list)
         r2 = cuda_r2(Y_pred,Y)
         rmse = cuda_rmse(Y_pred,Y)
+        elbo_loss=elbo_loss/(i+1)
         validation_loss_log_likelihood = losses/obs_size
+        print(f'held out {mode} ELBO: ',elbo_loss)
         print(f'held out {mode} nll: ',validation_loss_log_likelihood)
         print(f'held out {mode} R^2: ',r2)
         print(f'held out {mode} rmse: ',rmse)
-        return validation_loss_log_likelihood,r2,rmse
+        return validation_loss_log_likelihood,r2,rmse,elbo_loss
 
-    def train_loop(self,opt):
+    def mse_loop(self,opt,T=None,mode='train'):
         self.vi_obj.train()
-        self.dataloader.dataset.set('train')
+        self.dataloader.dataset.set(mode)
+        pbar= tqdm.tqdm(self.dataloader)
+        loss = torch.nn.MSELoss()
+        for i,(X,x_cat,y) in enumerate(pbar):
+            X=X.to(self.device)
+            y=y.to(self.device)
+            y_pred = self.vi_obj.mean_forward(X)
+            L = loss(y,y_pred)
+            pbar.set_description(f"MSE: {L.item()}")
+            opt.zero_grad()
+            L.backward()
+            opt.step()
+
+    def train_loop(self,opt,T=None,mode='train'):
+        self.vi_obj.train()
+        self.dataloader.dataset.set(mode)
         pbar= tqdm.tqdm(self.dataloader)
         for i,(X,x_cat,y) in enumerate(pbar):
             X=X.to(self.device)
@@ -305,7 +384,7 @@ class experiment_regression_object():
 
             z_mask=torch.randperm(self.n)[:self.vi_obj.x_s]
             Z_prime = self.X[z_mask, :].to(self.device)
-            log_loss,D=self.vi_obj.get_loss(y,X,Z_prime)
+            log_loss,D=self.vi_obj.get_loss(y,X,Z_prime,T)
             # print(self.vi_obj.r.k.base_kernel.lengthscale)
             pbar.set_description(f"D: {D.item()} log_loss: {log_loss.item() }")
             tot_loss = D + log_loss
@@ -333,14 +412,30 @@ class experiment_regression_object():
             opt.step()
 
     def fit(self):
-
+        if self.prefit_mse:
+            self.opt = torch.optim.Adam(self.vi_obj.parameters(), lr=self.lr)
+            self.vi_obj.r.k.requires_grad_(False)
+            best = -np.inf
+            counter = 0
+            for i in range(self.train_params['epochs']):
+                self.mse_loop(self.opt)
+                validation_loss, r2, rsme, val_elbo = self.validation_loop('val')
+                if r2 > best:
+                    best = r2
+                    self.dump_model(self.global_hyperit)
+                    counter = 0
+                else:
+                    counter += 1
+                    if counter > self.train_params['patience']:
+                        break
+            self.load_model(self.global_hyperit)
         self.opt = torch.optim.Adam(self.vi_obj.parameters(), lr=self.lr)
         self.vi_obj.r.k.requires_grad_(False)
         best=np.inf
         counter=0
         for i in range(self.train_params['epochs']):
             self.train_loop(self.opt)
-            validation_loss,r2,rsme=self.validation_loop('val')
+            validation_loss,r2,rsme,val_elbo=self.validation_loop('val')
             if validation_loss<best:
                 best=validation_loss
                 self.dump_model(self.global_hyperit)
@@ -349,14 +444,19 @@ class experiment_regression_object():
                 counter+=1
                 if counter>self.train_params['patience']:
                     break
-        self.load_model(self.global_hyperit)
         self.best = best
-        # self.vi_obj.k.base_kernel.requires_grad_(True)
-        self.T = self.optimize_T('val')
-        self.optimize_ls('val',self.T)
+        if best is None:
+            self.best = np.inf
+        else:
+            self.best = best
         self.load_model(self.global_hyperit)
-        validation_loss,valr2,val_rsme=self.validation_loop('val',self.T)
-        test_loss,testr2,test_rsme = self.validation_loop('test',self.T)
+        self.T = self.optimize_T('val')
+
+    def final_evaluation(self):
+        # self.T = self.optimize_T_gradient('val')
+        print('Tempering: ',self.T)
+        validation_loss,valr2,val_rsme,val_elbo=self.validation_loop('val',self.T)
+        test_loss,testr2,test_rsme,test_elbo = self.validation_loop('test',self.T)
         self.create_NLL_plot('val',self.T)
         self.create_NLL_plot('test',self.T)
 
@@ -395,9 +495,28 @@ class experiment_regression_object():
         plt.clf()
 
     def run(self):
-        if os.path.exists(self.save_path + 'best_model_20.pt'):
+        if os.path.exists(self.save_path + f'best_model_{self.max_its-1}.pt'):
             return
-        self.trials = Trials()
+
+        if not os.path.exists(self.save_path + 'hyperopt_database.p'):
+            self.trials = Trials()
+        else:
+            trials = pickle.load(open(self.save_path + 'hyperopt_database.p', "rb"))
+            trials = dill.loads(trials)
+            tids=[]
+            ok_trials = []
+            for i,el in enumerate(trials.trials):
+                if el['result']['status']=='ok':
+                    tids.append(el['tid'])
+                    ok_trials.append(el)
+            for i,el in enumerate(ok_trials):
+                el['tid']=i
+            trials._dynamic_trials = ok_trials
+            trials.refresh()
+            self.trials = trials
+            if tids:
+                self.global_hyperit= len(ok_trials)
+
         best = fmin(fn=self,
                     space=self.hyperparameter_space,
                     algo=tpe.suggest,
@@ -473,18 +592,20 @@ class experiment_classification_object():
         self.X_OOB=torch.cat(x_OOB_list,dim=0)
         self.n= self.X.shape[0]
         self.m=int(round(self.X.shape[0]**0.5)*parameters_in['m_factor'])
+        if parameters_in['x_s']==0.0:
+            parameters_in['x_s']=self.m
         parameters_in['m'] = self.m
         parameters_in['init_its'] = self.train_params['init_its']
         self.Y=torch.cat(y_list,dim=0).unsqueeze(-1)
 
         if self.n>parameters_in['m']:
             z_mask=torch.randperm(self.n)[:parameters_in['m']]
-            self.Z =  self.X[z_mask].flatten(1).float()
+            self.Z =  self.X[z_mask].flatten(1).float().clone()
             self.X_hat =  self.X[torch.randperm(self.n)[:parameters_in['m']]].flatten(1).float()
             self.Y_Z= self.Y[z_mask,:].float()
 
         else:
-            self.Z=self.X.flatten(1).float()
+            self.Z=self.X.flatten(1).float().clone()
         self.k = self.get_kernels(self.VI_params['p_kernel'],parameters_in)
         self.r=torch.nn.ModuleList()
         for i in range(self.train_params['output_classes']):
@@ -590,8 +711,7 @@ class experiment_classification_object():
 
 
         elif string == 'r_param_scaling':
-            k = r_param_cholesky_scaling(k=self.k, Z=self.Z, X=self.X_hat,
-                                         sigma=self.k.outputscale.item(),
+            k = r_param_cholesky_scaling(k=self.k, Z=self.Z, X=self.X_hat, sigma=self.k.outputscale.item(),
                                          parametrize_Z=params['parametrize_Z']).to(self.device)
             print(k.k.outputscale,k.k.base_kernel.lengthscale)
             k.init_L()

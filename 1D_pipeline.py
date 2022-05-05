@@ -1,6 +1,6 @@
 import os.path
 
-from utils.hyperopt_run import *
+from utils.custom_run import *
 from simulate_data.unit_test_data import *
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -9,7 +9,7 @@ from GP_baseline.gp_baseline_vi import *
 from sklearn.model_selection import train_test_split
 import numpy as np
 import imageio
-
+import shutil
 sns.set()
 #TODO: upgrade m_Q wtf haha
 nn_params = {
@@ -19,23 +19,45 @@ nn_params = {
     'output_dim': 1,
 }
 VI_params={
-    'q_kernel':'r_param_scaling',
+    'q_kernel':'r_param_scaling',#'nn_kernel',#'r_param_scaling',#'r_param_simple'
     'p_kernel':'rbf',
-    'sigma':1e-4,
     'm_p':0.0,
-    'reg':1e-3,
+    'reg':1e-2,
     'r':50,
-    'y_var': 10.0,
-    'APQ':True,
-    'parametrize_Z':True
+    'APQ': True,
 }
+h_space={
+    'depth_x':[2],
+    'width_x':[25],
+    'bs':[1000],
+    'lr':[1e-2],
+    'm_P':[1.0],
+    'sigma':[1e-3],
+    'transformation':[torch.nn.Tanh()],
+    'm_factor':[1.],
+    'parametrize_Z': [False],
+    'use_all_m': [False],
+    'm_q_choice': ['mlp'],
+    'x_s':[100],
+#You get negative variance WTF?!
+}
+#KRR issue is likely related to initialization!
+training_params = {
 
-training_params = {'bs': 900,
                    'patience': 1000,
                    'device': 'cuda:0',
-                   'epochs':2000,
-                   'lr':1e-2
-                   }
+                   'epochs':1000,
+                   'lr':1e-2,
+                   'model_name':'GWI',
+                   'savedir':'regression_test_3',
+                   'seed':0,
+                   'hyperits':1,
+                    'init_its':250,
+                    'dataset':'None',
+                    'fold': 0,
+                    'bs': 1000,
+
+}
 
 def generate_gif(filenames,dir,gif_name):
     with imageio.get_writer(f'{dir}/{gif_name}.gif', mode='I') as writer:
@@ -97,9 +119,12 @@ def plot_stuff(X_inducing,Y_inducing,X,X_tr,y_tr,X_val,y_val,y_hat,l,u,method,in
         os.makedirs(dir)
 
     sns.scatterplot(X_tr.squeeze(),y_tr.squeeze(),alpha=0.5)
-    sns.scatterplot(X_inducing.squeeze(),Y_inducing.squeeze(),color='y')
+    try:
+        sns.scatterplot(X_inducing.squeeze(),Y_inducing.squeeze(),color='y',alpha=1.0)
+    except Exception as e:
+        pass
     sns.scatterplot(X_val.squeeze(),y_val.squeeze(),color='r',alpha=0.5)
-    ax=sns.lineplot(X.squeeze(),y_hat)
+    ax=sns.lineplot(X.squeeze(),y_hat.squeeze())
     ax.fill_between(X.squeeze(),l,u, color='b', alpha=.5)
     fname=f'{dir}/{method}_{index}_{epoch}.png'
     plt.title(f'Epoch: {epoch}')
@@ -114,7 +139,7 @@ def get_u_l(y_hat,y_hat_q):
     return u,l
 
 def sim_run(index,method):
-    p_z=VI_params['parametrize_Z']
+    p_z=False
     dir_name = f'gwi_gif_{index}_param_z={p_z}'
     dir_name_2 = f'heatmap_gwi_gif_{index}_param_z={p_z}'
     if index==1:
@@ -123,32 +148,68 @@ def sim_run(index,method):
         X,y=sim_sin_curve_2()
     elif index==3:
         X,y = sim_sin_curve_3(noise=0.25)
-    X_tr, X_val, y_tr, y_val=remove_random_chunks(X,y,chunks_to_remove=5,total_chunks=20)
+    X_tr, X_val, y_tr, y_val=remove_random_chunks(X,y,chunks_to_remove=15,total_chunks=20)
+    # X_tr, X_val, y_tr, y_val=forecast_split(X,y,factor=0.75)
     # method = 'GWI'
     print(y_tr.std().item())
     VI_params['y_var'] = y_tr.std().item()
-    e=mvp_experiment_object(X=X_tr, Y=y_tr, nn_params=nn_params, VI_params=VI_params, train_params=training_params)
-    e.fit(X.cuda())
-    filenames=[]
-    x_inducing=e.Z.cpu().numpy()
-    y_inducing=e.Y_Z.cpu().numpy()
-    for i,(a,b) in enumerate(zip(e.preds,e.vars)):
-        if i%10==0:
-            l,u=get_u_l(a,b)
-            fname=plot_stuff(X_inducing=x_inducing,Y_inducing=y_inducing,X=X,X_tr=X_tr,y_tr=y_tr,X_val=X_val,y_val=y_val,y_hat=a,l=l,u=u,method=method,index=index,dir=dir_name,epoch=i)
-            filenames.append(fname)
-    generate_gif(filenames,dir_name,f'line_plot_{index}')
-    filenames=[]
-    for i,(a,b) in enumerate(zip(e.d_vals,e.mat_list)):
-        if i%10==0:
-            fname = plot_stuff_2(b,a,method,index,dir_name_2,i)
-            filenames.append(fname)
-    generate_gif(filenames,dir_name_2,f'heatmap_{index}')
+    dirname = f'regression_test_1_False'
+    training_params['savedir'] = dirname
+    if os.path.exists(dirname):
+        shutil.rmtree(dirname)
+    if method=='GWI':
+        e=regression_object(X=X_tr.float(),Y=y_tr.float(),
+            hyper_param_space=h_space, VI_params=VI_params, train_params=training_params)
+            # mvp_experiment_object(X=X_tr, Y=y_tr, nn_params=nn_params, VI_params=VI_params, train_params=training_params)
+        e.run()
+        x_inducing=e.Z.cpu().numpy()
+        y_inducing=e.Y_Z.cpu().numpy()
+        y_hat,b=e.pred_mean_std(X.cuda())
+        l, u = get_u_l(y_hat.squeeze(), b.squeeze())
+    elif method=='GP':
+        e = gp_full_baseline(train_x=X_tr.squeeze(),train_y=y_tr.squeeze(),train_params=training_params)
+        e.to('cuda:0')
+        e.train_model()
+        y_hat,l,u = e.eval_model(X.squeeze().cuda())
+        y_hat,l,u = y_hat.cpu(),l.cpu(),u.cpu()
+        x_inducing=X.cpu().squeeze()
+        y_inducing=y.cpu().squeeze()
+
+    elif method=='SVGP':
+        e = gp_svi_baseline(train_x=X_tr,train_y=y_tr,train_params=training_params,VI_params=VI_params)
+        e.to('cuda:0')
+        e.train_model()
+        x_inducing=e.inducing_points.cpu().numpy()
+        y_inducing=e.inducing_points_y.cpu().numpy()
+        y_hat,l,u = e.eval_model(X.cuda())
+        y_hat,l,u = y_hat.cpu(),l.cpu(),u.cpu()
+
+    fname = plot_stuff(X_inducing=x_inducing, Y_inducing=y_inducing, X=X, X_tr=X_tr.cpu(), y_tr=y_tr.cpu(), X_val=X_val.cpu(),
+                       y_val=y_val.cpu(), y_hat=y_hat.cpu(), l=l.cpu(), u=u.cpu(), method=method, index=index, dir=dir_name, epoch=1000)
+
+
+
+    # filenames=[]
+    # for i,(a,b) in enumerate(zip(e.preds,e.vars)):
+    #     if i%10==0:
+    #         l,u=get_u_l(a,b)
+    #         fname=plot_stuff(X_inducing=x_inducing,Y_inducing=y_inducing,X=X,X_tr=X_tr,y_tr=y_tr,X_val=X_val,y_val=y_val,y_hat=a,l=l,u=u,method=method,index=index,dir=dir_name,epoch=i)
+    #         filenames.append(fname)
+    # generate_gif(filenames,dir_name,f'line_plot_{index}')
+    # filenames=[]
+    # for i,(a,b) in enumerate(zip(e.d_vals,e.mat_list)):
+    #     if i%10==0:
+    #         fname = plot_stuff_2(b,a,method,index,dir_name_2,i)
+    #         filenames.append(fname)
+    # generate_gif(filenames,dir_name_2,f'heatmap_{index}')
 
 if __name__ == '__main__':
     torch.random.manual_seed(np.random.randint(0,100000))
-    for i in [1,2,3]:
+    # for i in [1,2,3]:
+    for i in [1]:
         sim_run(i,'GWI')
+        sim_run(i,'GP')
+        sim_run(i,'SVGP')
 
     #FIGURE OUT SCALING ISSUE
 

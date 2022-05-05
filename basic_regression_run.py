@@ -8,6 +8,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from GP_baseline.gp_baseline_exact import *
 from GP_baseline.gp_baseline_vi import *
+from utils.custom_run import gpr_reference
 import shutil
 sns.set()
 #TODO: upgrade m_Q wtf haha
@@ -18,7 +19,7 @@ nn_params = {
     'output_dim': 1,
 }
 VI_params={
-    'q_kernel':'r_param_scaling',#'r_param_simple',#'r_param_scaling'
+    'q_kernel':'nn_kernel',#'r_param_simple',#'r_param_scaling'
     'p_kernel':'rbf',
     'm_p':0.0,
     'reg':1e-2,
@@ -30,17 +31,17 @@ h_space={
     'width_x':[10],
     'bs':[1000],
     'lr':[1e-2],
-    'm_P':[0.0],
-    'sigma':[1e-7],
+    'm_P':[1.0],
+    'sigma':[1e-3],
     'transformation':[torch.nn.Tanh()],
     'm_factor':[1.],
-    'parametrize_Z': [True],
-    'use_all_m': [False],
+    'parametrize_Z': [False],
+    'use_all_m': [True],
     'm_q_choice': ['mlp'],
-    'x_s':[50],
-
+    'x_s':[0],
+#You get negative variance WTF?!
 }
-
+#KRR issue is likely related to initialization!
 training_params = {
 
                    'patience': 1000,
@@ -55,20 +56,24 @@ training_params = {
                    }
 if __name__ == '__main__':
     #figure out new r that is able to be proportional to MSE
-    for f in [False]:
+    for f in [True]:
         dirname =f'regression_test_1_{f}'
         training_params['savedir'] = dirname
         h_space['use_all_m'] = [f]
         if os.path.exists(dirname):
             shutil.rmtree(dirname)
         # ['boston', 'concrete', 'energy','KIN8NM', 'power','protein' ,'wine', 'wine', 'naval']
-        dataset="power"
-        fold=1
+        dataset="energy"
+        fold=2
         training_params['fold']=fold
         training_params['dataset']=dataset
         method = 'GWI'
         if method=='GWI':
             e=experiment_regression_object(hyper_param_space=h_space, VI_params=VI_params, train_params=training_params)
+            e.run()
+
+        elif method=='GPR':
+            e=gpr_reference(hyper_param_space=h_space, VI_params=VI_params, train_params=training_params)
             e.run()
         # y_hat=e.predict_mean(X.cuda()).squeeze()
         # y_hat_q=e.predict_uncertainty(X.cuda()).squeeze()

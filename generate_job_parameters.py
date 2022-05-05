@@ -2,6 +2,7 @@ import copy
 import pickle
 import torch
 import os
+import random
 def load_obj(name,folder):
     with open(f'{folder}' + name, 'rb') as f:
         return pickle.load(f)
@@ -9,7 +10,7 @@ reg_EPOCHS=1000
 class_EPOCHS=100
 class_BS = 1000
 reg_BS = 1000
-x_S_reg = 50
+x_S_reg = 100
 x_S_class = 100
 
 def generate_classification_jobs():
@@ -68,22 +69,20 @@ def generate_classification_jobs():
                     pickle.dump(job_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
 def generate_regression_jobs():
-    for m_q in ['krr', 'mlp']:
+    for m_q in ['mlp']:
         act_list = [torch.nn.Tanh()]
         for act in act_list:
-            for pmz in [True,False]:
-                job_name = f'{x_S_reg}_{reg_BS}_reg_{m_q}_{pmz}_{act._get_name()}'
+            # for pmz in [True,False]:
+            for pmz in [False]:
+                job_name = f'new_{x_S_reg}_{reg_BS}_reg_{m_q}_{pmz}_{act._get_name()}'
                 if not os.path.exists(job_name):
                     os.makedirs(job_name)
-                # dataset = ['boston', 'concrete', 'energy','KIN8NM', 'power','protein' ,'wine', 'yacht', 'naval']
-                dataset = ['boston', 'concrete', 'energy','KIN8NM', 'power','wine', 'yacht', 'naval']
-                use_all_m = [False,False,True,False,False,False,False,True,False]
+                dataset = ['boston', 'concrete', 'energy','KIN8NM', 'power','protein' ,'wine', 'yacht', 'naval']
+                # dataset = ['energy', 'power','protein']
+                use_all_m = [True,True,True,False,False,False,True,True,False]
+                # use_all_m = [True,False,False]
                 # use_all_m = [False]
                 # dataset = ['yacht']
-                if pmz and (m_q=='krr'):
-                    krr_mq = [1.0,2.0,3.0,4.0,5.0,7.5,10.] # 10 jobs!
-                else:
-                    krr_mq = [1.0,2.0,3.0,4.0,5.0] # 2 jobs!
 
                 init_it_list = [100]*len(dataset)
                 VI_params = {
@@ -99,10 +98,10 @@ def generate_regression_jobs():
                     'width_x': [10],
                     'bs': [reg_BS] ,
                     'lr': [1e-2],
-                    'm_P': [0.0,0.5,1.0],
-                    'sigma': [1e-5,1e-6,1e-7],
-                    'transformation': [act]  ,
-                    'm_factor': [0.5,1.0,2.0] if m_q =='mlp' else krr_mq,
+                    'm_P': [0.0,0.25,0.5,0.75,1.0],
+                    'sigma': [1e-6],
+                    'transformation': [act] ,
+                    'm_factor': [0.5,0.25,1.0,1.25,1.5,1.75,2.0,3.0] if m_q =='mlp' else  [1.0,2.0,3.0,4.0,5.0],
                     # 'm_factor':[0.5,1.0,2.0],
                 'parametrize_Z':[pmz],
                         'use_all_m':[False],
@@ -119,7 +118,7 @@ def generate_regression_jobs():
                     'savedir': f'{job_name}_results',
                     'seed': 0,
                     'fold':0,
-                    'hyperits': 20,
+                    'hyperits': 30,
                     'regression':True,
                     'init_its': 100
 

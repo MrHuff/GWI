@@ -132,6 +132,21 @@ class multi_input_Sequential_res_net(torch.nn.Sequential):
                     inputs = output
         return inputs
 
+    def up_to_layer(self,inputs,layer_max=2):
+
+        for i,module in enumerate(self._modules.values()):
+            if type(inputs) == tuple:
+                inputs = module(*inputs)
+            else:
+                output = module(inputs)
+                if inputs.shape[1]==output.shape[1]:
+                    inputs = inputs+output
+                else:
+                    inputs = output
+            if i<=layer_max:
+                return inputs
+
+
 class nn_node(torch.nn.Module): #Add dropout layers, Do embedding layer as well!
     def __init__(self,d_in,d_out,cat_size_list,transformation=torch.tanh):
         super(nn_node, self).__init__()

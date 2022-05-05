@@ -26,7 +26,29 @@ def run_func(job_params):
     e.run()
     del e
     torch.cuda.empty_cache()
+
+def check_completed_jobs(in_fold,jobs):
+    uncomplete_jobs = []
+    for j in jobs:
+        job_dict = load_obj(j,f'{in_fold}/')
+        train_params  = job_dict['training_params']
+        max_its = train_params['hyperits']
+        model_name = train_params['model_name']
+        savedir = train_params['savedir']
+        dataset = train_params['dataset']
+        fold = train_params['fold']
+        seed = train_params['seed']
+        save_path = f'{savedir}/{dataset}_seed={seed}_fold_idx={fold}_model={model_name}/'
+        path = save_path +  f'best_model_{max_its-1}.pt'
+        if not os.path.exists(path):
+            uncomplete_jobs.append(j)
+
+    return uncomplete_jobs
+
+
 if __name__ == '__main__':
+    # torch.multiprocessing.set_start_method("spawn")
+
     input  = vars(parser.parse_args())
     chunk_idx = input['chunk_idx']
     fold = input['job_folder']
@@ -34,8 +56,9 @@ if __name__ == '__main__':
     parallel_jobs = input['parallel_jobs']
 
     jobs = os.listdir(fold)
-    jobs.sort()
+    jobs = check_completed_jobs(fold,jobs)
 
+    jobs = sorted(jobs, key=lambda x: int(x[-8]))
     job_chunks_list = np.array_split(jobs, total_chunks)
 
     job_chunk=job_chunks_list[chunk_idx]
@@ -45,8 +68,8 @@ if __name__ == '__main__':
         chunked_input.append(loaded)
     if parallel_jobs==1:
         for el in chunked_input:
+            print(el)
             run_func(el)
-            torch.cuda.synchronize()
     else:
         with Pool(processes = parallel_jobs) as p:   # Paralleizing over 2 GPUs
             results = p.map(run_func,chunked_input)
