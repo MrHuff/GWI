@@ -142,9 +142,9 @@ class neural_network_kernel_lol(torch.nn.Module):
 
     def phi_forward(self,x):
         # with torch.no_grad():
-        #     layer = self.phi.covariate_net((x,[]))
+        layer = self.phi.covariate_net((x,[]))
         # layer = self.final_layer(layer)
-        layer = self.phi.covariate_net.up_to_layer((x, []),1)
+        # layer = self.phi.covariate_net.up_to_layer((x, []),1)
         # return torch.sigmoid(layer)
         return layer
     def forward(self,x1,x2=None):

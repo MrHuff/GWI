@@ -12,6 +12,24 @@ class regression_object(experiment_regression_object):
         self.Y = Y
         self.ds=general_custom_dataset(X,Y,[])
         self.empirical_sigma = Y.std().item()
+    # def train_loop(self,opt,T=None,mode='train'):
+    #     self.vi_obj.train()
+    #     self.dataloader.dataset.set(mode)
+    #     pbar= tqdm.tqdm(self.dataloader)
+    #     for i,(X,x_cat,y) in enumerate(pbar):
+    #         X=X.to(self.device)
+    #         y=y.to(self.device)
+    #         # Investigate X_s, eigen value decay argument
+    #
+    #         z_mask=torch.randperm(self.n)[:self.vi_obj.x_s]
+    #         Z_prime = self.X[z_mask, :].to(self.device)
+    #         log_loss,D=self.vi_obj.get_loss(y,X,Z_prime,T)
+    #         # print(self.vi_obj.r.k.base_kernel.lengthscale)
+    #         pbar.set_description(f"D: {D.item()} log_loss: {log_loss.item() }")
+    #         tot_loss = 0.1*D + log_loss
+    #         opt.zero_grad()
+    #         tot_loss.backward()
+    #         opt.step()
 
     def __call__(self, parameters_in):
         self.vi_obj_copy = dill.dumps(self.trials)

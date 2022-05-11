@@ -8,7 +8,7 @@ nn_params = {
     'output_dim': 1,
 }
 VI_params={
-    'q_kernel':'nn_kernel',#'r_param_simple',#'r_param_scaling'
+    'q_kernel':'r_param_scaling',#'r_param_simple',#'r_param_scaling'
     'p_kernel':'rbf',
     'm_p':0.0,
     'reg':1e-2,
@@ -16,13 +16,13 @@ VI_params={
     'APQ': True,
 }
 h_space={
-    'depth_x':[2],
-    'width_x':[25],
+    'depth_x':[1],
+    'width_x':[50],
     'bs':[100],
     'lr':[1e-2],
     'm_P':[0.0],
     'sigma':[1e-7],
-    'transformation':[torch.nn.Tanh()],
+    'transformation':[torch.nn.ReLU()],
     'm_factor':[1.],
     'parametrize_Z': [False],
     'use_all_m': [True],
@@ -32,10 +32,10 @@ h_space={
 }
 training_params = {
 
-                   'patience': 1000,
+                   'patience': 100,
                    'device': 'cuda:0',
-                   'epochs':1000,
-                   'lr':1e-3,
+                   'epochs':100,
+                   'lr':1e-2,
                    'model_name':'GWI',
                    'savedir':'2d_plot_nn_kernel',
                    'seed':0,

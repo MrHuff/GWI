@@ -10,7 +10,11 @@ from sklearn.model_selection import train_test_split
 import numpy as np
 import imageio
 import shutil
+# plt.rcParams['text.usetex'] = True
+# plt.rcParams['text.latex.preamble'] = [r'\usepackage{amsmath}']
 sns.set()
+print(sns.color_palette("tab10")
+)
 #TODO: upgrade m_Q wtf haha
 nn_params = {
     'layers_x': [10,10],
@@ -28,7 +32,7 @@ VI_params={
 }
 h_space={
     'depth_x':[2],
-    'width_x':[25],
+    'width_x':[50],
     'bs':[1000],
     'lr':[1e-2],
     'm_P':[1.0],
@@ -38,7 +42,7 @@ h_space={
     'parametrize_Z': [False],
     'use_all_m': [False],
     'm_q_choice': ['mlp'],
-    'x_s':[100],
+    'x_s':[200],
 #You get negative variance WTF?!
 }
 #KRR issue is likely related to initialization!
@@ -114,21 +118,24 @@ def plot_stuff_2(sigma,d_val,method,index,dir,epoch):
     plt.clf()
     return fname
 
-def plot_stuff(X_inducing,Y_inducing,X,X_tr,y_tr,X_val,y_val,y_hat,l,u,method,index,dir,epoch):
+def plot_stuff(equation,X_inducing,Y_inducing,X,X_tr,y_tr,X_val,y_val,y_hat,l,u,method,index,dir,epoch):
     if not os.path.exists(dir):
         os.makedirs(dir)
 
-    sns.scatterplot(X_tr.squeeze(),y_tr.squeeze(),alpha=0.5)
+    sns.scatterplot(X_tr.squeeze(),y_tr.squeeze(),alpha=0.35,color=(0.12156862745098039, 0.4666666666666667, 0.7058823529411765))
     try:
-        sns.scatterplot(X_inducing.squeeze(),Y_inducing.squeeze(),color='y',alpha=1.0)
+        sns.scatterplot(X_inducing.squeeze(),Y_inducing.squeeze(),color= (0.17254901960784313, 0.6274509803921569, 0.17254901960784313),alpha=1.0)
     except Exception as e:
         pass
-    sns.scatterplot(X_val.squeeze(),y_val.squeeze(),color='r',alpha=0.5)
+    sns.scatterplot(X_val.squeeze(),y_val.squeeze(),color=(0.8392156862745098, 0.15294117647058825, 0.1568627450980392),alpha=0.35)
     ax=sns.lineplot(X.squeeze(),y_hat.squeeze())
-    ax.fill_between(X.squeeze(),l,u, color='b', alpha=.5)
+    ax.fill_between(X.squeeze(),l,u, color=(0.12156862745098039, 0.4666666666666667, 0.7058823529411765), alpha=.15)
     fname=f'{dir}/{method}_{index}_{epoch}.png'
-    plt.title(f'Epoch: {epoch}')
-    plt.savefig(fname)
+    plt.title(fr'${equation}$',fontsize=15)
+    plt.xlabel(r"$x$",fontsize=18)
+    plt.ylabel(r"$y(x)$",fontsize=18)
+    plt.savefig(fname,bbox_inches = 'tight',
+            pad_inches = 0.05)
     plt.close()
     plt.clf()
     return fname
@@ -144,11 +151,15 @@ def sim_run(index,method):
     dir_name_2 = f'heatmap_gwi_gif_{index}_param_z={p_z}'
     if index==1:
         X,y=sim_sin_curve()
+        equation = r'y(x)=\sin(x)+0.1x+\epsilon'
     elif index==2:
         X,y=sim_sin_curve_2()
+        equation = r'y(x)=\sin(x)+0.1x^2+\epsilon'
     elif index==3:
         X,y = sim_sin_curve_3(noise=0.25)
-    X_tr, X_val, y_tr, y_val=remove_random_chunks(X,y,chunks_to_remove=15,total_chunks=20)
+        equation = r'y(x)=\sin(3\pi x)+0.3\cos(9\pi x)+0.5\sin(7\pi x)+ \epsilon'
+
+    X_tr, X_val, y_tr, y_val=remove_random_chunks(X,y,chunks_to_remove=8,total_chunks=20)
     # X_tr, X_val, y_tr, y_val=forecast_split(X,y,factor=0.75)
     # method = 'GWI'
     print(y_tr.std().item())
@@ -184,7 +195,7 @@ def sim_run(index,method):
         y_hat,l,u = e.eval_model(X.cuda())
         y_hat,l,u = y_hat.cpu(),l.cpu(),u.cpu()
 
-    fname = plot_stuff(X_inducing=x_inducing, Y_inducing=y_inducing, X=X, X_tr=X_tr.cpu(), y_tr=y_tr.cpu(), X_val=X_val.cpu(),
+    fname = plot_stuff(equation=equation,X_inducing=x_inducing, Y_inducing=y_inducing, X=X, X_tr=X_tr.cpu(), y_tr=y_tr.cpu(), X_val=X_val.cpu(),
                        y_val=y_val.cpu(), y_hat=y_hat.cpu(), l=l.cpu(), u=u.cpu(), method=method, index=index, dir=dir_name, epoch=1000)
 
 
@@ -206,10 +217,12 @@ def sim_run(index,method):
 if __name__ == '__main__':
     torch.random.manual_seed(np.random.randint(0,100000))
     # for i in [1,2,3]:
-    for i in [1]:
+    # for i in [1]:
+    # for i in [1,2,3]:
+    for i in [3]:
         sim_run(i,'GWI')
-        sim_run(i,'GP')
-        sim_run(i,'SVGP')
+        # sim_run(i,'GP')
+        # sim_run(i,'SVGP')
 
     #FIGURE OUT SCALING ISSUE
 
